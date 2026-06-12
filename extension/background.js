@@ -8,12 +8,32 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "ask-claude") {
-    chrome.storage.session.set({ selectedText: info.selectionText }, () => {
-      chrome.sidePanel.open({ tabId: tab.id });
+// 把新选中写入 selections 数组：与已有段完全相同 → 忽略（去重优先，待替换状态保留）；
+// 有待替换标记且目标仍存在 → 原位替换；否则 → 追加。完成后清除替换标记并打开面板。
+function addSelection(text, tabId) {
+  chrome.storage.session.get(["selections", "replaceTargetId"], (res) => {
+    const selections = res.selections || [];
+    const replaceTargetId = res.replaceTargetId || null;
+
+    if (selections.some((s) => s.text === text)) {
+      chrome.sidePanel.open({ tabId });
+      return;
+    }
+
+    const hasTarget = replaceTargetId && selections.some((s) => s.id === replaceTargetId);
+    const next = hasTarget
+      ? selections.map((s) => (s.id === replaceTargetId ? { ...s, text, addedAt: Date.now() } : s))
+      : [...selections, { id: crypto.randomUUID(), text, addedAt: Date.now() }];
+
+    // 替换完成（或标记指向已删除条目而失效）后，统一清除标记
+    chrome.storage.session.set({ selections: next, replaceTargetId: null }, () => {
+      chrome.sidePanel.open({ tabId });
     });
-  }
+  });
+}
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === "ask-claude") addSelection(info.selectionText, tab.id);
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -21,11 +41,7 @@ chrome.action.onClicked.addListener((tab) => {
 });
 
 chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (msg.type === "SELECTED_TEXT") {
-    chrome.storage.session.set({ selectedText: msg.text }, () => {
-      chrome.sidePanel.open({ tabId: sender.tab.id });
-    });
-  }
+  if (msg.type === "SELECTED_TEXT") addSelection(msg.text, sender.tab.id);
 });
 
 // 健康检查：临时拉起 host 发 ping，收到 pong 即就绪（host 随即被销毁）
