@@ -66,6 +66,7 @@ newChatBtn.addEventListener("click", () => {
   const transcript = getTranscript();
   if (transcript) copyText(transcript, newChatBtn);
   sessionId = null;
+  injectedScenario = null; // 新会话需重新注入场景；激活状态保留，继续用同场景不必重选
   messagesEl.querySelectorAll(".msg").forEach((m) => m.remove());
   hint.style.display = "";
   statusText.textContent = transcript ? "已复制对话，新会话已开启" : "新会话已开启";
@@ -338,10 +339,17 @@ function doSend() {
   if (isStreaming) return;
   const question = questionEl.value.trim();
   const context = buildContext();
-  if (!question && !context) return;
+  if (!question && !context) return; // 仅激活场景不构成发送条件
+
+  // 场景注入：会话级只注入一次；按 id+prompt 快照比较，切换场景/编辑提示词后下一条消息重新注入
+  const activeScenario = scenarios.find((s) => s.id === activeScenarioId) || null;
+  const needInject = !!activeScenario && (!injectedScenario ||
+    injectedScenario.id !== activeScenario.id || injectedScenario.prompt !== activeScenario.prompt);
+  const scenario = needInject ? activeScenario.prompt : "";
 
   const ctxLabel = selections.length > 1 ? `${selections.length} 段上下文` : "上下文";
-  addMsg("user", context ? `📎 ${ctxLabel} + ${question || "（分析选中内容）"}` : question);
+  const baseMsg = context ? `📎 ${ctxLabel} + ${question || "（分析选中内容）"}` : question;
+  addMsg("user", needInject ? `🎭 ${activeScenario.name} + ${baseMsg}` : baseMsg);
   questionEl.value = "";
   questionEl.style.height = "auto";
 
@@ -381,6 +389,8 @@ function doSend() {
       scheduleRender();
     } else if (msg.type === "done") {
       if (msg.sessionId) sessionId = msg.sessionId; // 记住会话，下一轮续聊
+      // 成功完成才确认注入快照；发送失败不标记，重试时会重新注入
+      if (needInject) injectedScenario = { id: activeScenario.id, prompt: activeScenario.prompt };
       finish();
     } else if (msg.type === "error") {
       rawReply = `[连接失败] ${msg.error}\n\n请确认已运行安装脚本：node install.js <插件ID>`;
@@ -398,5 +408,5 @@ function doSend() {
     }
   });
 
-  port.postMessage({ context, question, sessionId });
+  port.postMessage({ context, question, scenario, sessionId });
 }
