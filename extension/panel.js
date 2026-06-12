@@ -2,6 +2,7 @@ let selections = []; // 选段数组 [{id, text, addedAt}]，单一数据源在 
 let replaceTargetId = null; // 待替换条目 id；非空时下一次页面选中替换该条
 let isStreaming = false;
 let sessionId = null; // claude 会话 ID：同一对话框内续聊，点「新对话」清空
+let injectedContext = null; // 本会话已注入的选段上下文快照（拼接字符串）：同一上下文一轮会话只注入一次，变化才重新注入
 
 const dot = document.getElementById("dot");
 const statusText = document.getElementById("status-text");
@@ -67,6 +68,7 @@ newChatBtn.addEventListener("click", () => {
   if (transcript) copyText(transcript, newChatBtn);
   sessionId = null;
   injectedScenario = null; // 新会话需重新注入场景；激活状态保留，继续用同场景不必重选
+  injectedContext = null; // 新会话需重新注入选段上下文；选段保留
   messagesEl.querySelectorAll(".msg").forEach((m) => m.remove());
   hint.style.display = "";
   statusText.textContent = transcript ? "已复制对话，新会话已开启" : "新会话已开启";
@@ -346,7 +348,11 @@ function doSend() {
   if (isStreaming) return;
   const question = questionEl.value.trim();
   const context = buildContext();
-  if (!question && !context) return; // 仅激活场景不构成发送条件
+
+  // 选段上下文会话级只注入一次：拼接结果与已注入快照一致则不重复携带，省 token；
+  // 选段增/删/替换会改变拼接结果，自动触发重新注入全部选段
+  const needCtxInject = !!context && context !== injectedContext;
+  if (!question && !needCtxInject) return; // 没有新内容可发（仅激活场景不构成发送条件）
 
   // 场景注入：会话级只注入一次；按 id+prompt 快照比较，切换场景/编辑提示词后下一条消息重新注入
   const activeScenario = scenarios.find((s) => s.id === activeScenarioId) || null;
@@ -355,8 +361,11 @@ function doSend() {
   const scenario = needInject ? activeScenario.prompt : "";
 
   const ctxLabel = selections.length > 1 ? `${selections.length} 段上下文` : "上下文";
-  const baseMsg = context ? `📎 ${ctxLabel} + ${question || "（分析选中内容）"}` : question;
-  addMsg("user", needInject ? `🎭 ${activeScenario.name} + ${baseMsg}` : baseMsg);
+  const parts = [];
+  if (needInject) parts.push(`🎭 ${activeScenario.name}`);
+  if (needCtxInject) parts.push(`📎 ${ctxLabel}`);
+  parts.push(question || "（分析选中内容）");
+  addMsg("user", parts.join(" + "));
   questionEl.value = "";
   questionEl.style.height = "auto";
 
@@ -398,6 +407,7 @@ function doSend() {
       if (msg.sessionId) sessionId = msg.sessionId; // 记住会话，下一轮续聊
       // 成功完成才确认注入快照；发送失败不标记，重试时会重新注入
       if (needInject) injectedScenario = { id: activeScenario.id, prompt: activeScenario.prompt };
+      if (needCtxInject) injectedContext = context;
       finish();
     } else if (msg.type === "error") {
       rawReply = `[连接失败] ${msg.error}\n\n请确认已运行安装脚本：node install.js <插件ID>`;
@@ -415,5 +425,5 @@ function doSend() {
     }
   });
 
-  port.postMessage({ context, question, scenario, sessionId });
+  port.postMessage({ context: needCtxInject ? context : "", question, scenario, sessionId });
 }
