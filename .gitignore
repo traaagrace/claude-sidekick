@@ -1,0 +1,8 @@
+# install.js 生成的本机文件（含绝对路径与插件 ID，因机器而异）
+host.sh
+host.bat
+com.claude.sidekick.json
+
+# 编辑器/系统
+.DS_Store
+*.swp

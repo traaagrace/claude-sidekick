@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Sidekick",
+  "version": "1.3.0",
+  "description": "选中页面内容，调用本地 Claude CLI 进行分析",
+  "permissions": [
+    "contextMenus",
+    "storage",
+    "sidePanel",
+    "activeTab",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "action": {
+    "default_title": "Claude Sidekick"
+  }
+}

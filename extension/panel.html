@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Claude Sidekick</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    background: #f7f7f5;
+    color: #1a1a1a;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    font-size: 14px;
+  }
+  header {
+    padding: 14px 16px 12px;
+    border-bottom: 1px solid #e5e5e3;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  header .logo { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
+
+  /* 工具栏：图标 + 文字按钮，含义一目了然 */
+  #toolbar {
+    background: #fff; border-bottom: 1px solid #e5e5e3;
+    padding: 6px 14px 8px; display: flex; gap: 8px;
+  }
+  #toolbar button {
+    display: inline-flex; align-items: center; gap: 4px;
+    background: #fafaf9; border: 1px solid #e0e0de; border-radius: 6px;
+    cursor: pointer; font-size: 12px; color: #555; padding: 4px 10px; line-height: 1.4;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  #toolbar button:hover { background: #f0f0ee; color: #1a1a1a; border-color: #ccc; }
+  header .status {
+    margin-left: auto; font-size: 11px; color: #999;
+    display: flex; align-items: center; gap: 4px;
+  }
+  header .dot { width: 6px; height: 6px; border-radius: 50%; background: #ccc; }
+  header .dot.ok { background: #4caf7d; }
+  header .dot.err { background: #e05252; }
+
+  #context-bar {
+    background: #fffbf0; border-bottom: 1px solid #f0e8cc;
+    padding: 8px 14px; font-size: 12px; color: #7a6a3a;
+    display: none; align-items: flex-start; gap: 8px;
+  }
+  #context-bar.visible { display: flex; }
+  #context-text { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.4; }
+  #clear-ctx { cursor: pointer; color: #b09050; font-size: 16px; line-height: 1; flex-shrink: 0; background: none; border: none; padding: 0; }
+
+  #messages { flex: 1; overflow-y: auto; padding: 16px 14px; display: flex; flex-direction: column; gap: 14px; }
+  .msg { max-width: 100%; line-height: 1.6; position: relative; }
+  .msg.user {
+    align-self: flex-end; background: #1a1a1a; color: #fff;
+    padding: 8px 12px; border-radius: 12px 12px 3px 12px; max-width: 85%; font-size: 13px;
+  }
+  .msg.assistant {
+    align-self: flex-start; background: #fff; border: 1px solid #e8e8e6;
+    padding: 10px 13px; border-radius: 3px 12px 12px 12px;
+    font-size: 13.5px; word-break: break-word;
+  }
+  /* user 消息保持纯文本，保留手动换行；assistant 由 Markdown 渲染控制排版 */
+  .msg.user .msg-text { white-space: pre-wrap; }
+  .msg-text.streaming::after {
+    content: "▋"; animation: blink 0.8s step-end infinite; color: #999; font-size: 12px;
+  }
+
+  /* ---- Markdown 渲染样式（assistant 气泡内） ---- */
+  .msg.assistant .msg-text > :first-child { margin-top: 0; }
+  .msg.assistant .msg-text > :last-child { margin-bottom: 0; }
+  .msg.assistant p, .msg.assistant ul, .msg.assistant ol,
+  .msg.assistant pre, .msg.assistant blockquote { margin: 6px 0; }
+  .msg.assistant h1, .msg.assistant h2, .msg.assistant h3, .msg.assistant h4 {
+    margin: 12px 0 6px; line-height: 1.4;
+  }
+  .msg.assistant h1 { font-size: 16px; }
+  .msg.assistant h2 { font-size: 15px; }
+  .msg.assistant h3, .msg.assistant h4 { font-size: 14px; }
+  .msg.assistant code {
+    background: #f0efec; border: 1px solid #e5e4e0; border-radius: 4px;
+    padding: 1px 5px; font-size: 12px;
+    font-family: ui-monospace, "SF Mono", Consolas, Menlo, monospace;
+  }
+  .msg.assistant pre {
+    background: #f6f6f4; border: 1px solid #e8e8e6; border-radius: 8px;
+    padding: 10px 12px; overflow-x: auto;
+  }
+  .msg.assistant pre code {
+    background: none; border: none; padding: 0;
+    display: block; white-space: pre; font-size: 12px; line-height: 1.5;
+  }
+  .msg.assistant ul, .msg.assistant ol { padding-left: 20px; }
+  .msg.assistant li { margin: 3px 0; }
+  .msg.assistant blockquote {
+    border-left: 3px solid #ddd; padding-left: 10px; color: #666;
+  }
+  .msg.assistant a { color: #2563eb; text-decoration: none; }
+  .msg.assistant a:hover { text-decoration: underline; }
+  .msg.assistant hr { border: none; border-top: 1px solid #e5e5e3; margin: 10px 0; }
+  /* 单条复制：悬停消息气泡时显示「复制」按钮 */
+  .copy-btn {
+    position: absolute; top: -10px; right: 8px; display: none;
+    background: #fff; border: 1px solid #ddd; border-radius: 5px;
+    cursor: pointer; font-size: 11px; color: #666; padding: 2px 8px; line-height: 1.4;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.12);
+  }
+  .msg:hover .copy-btn { display: block; }
+  .copy-btn:hover { color: #1a1a1a; border-color: #bbb; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .empty-hint { margin: auto; text-align: center; color: #bbb; font-size: 13px; line-height: 2; }
+  .empty-hint strong { display: block; font-size: 22px; margin-bottom: 6px; color: #ccc; }
+
+  #input-area {
+    background: #fff; border-top: 1px solid #e5e5e3;
+    padding: 10px 12px; display: flex; gap: 8px; align-items: flex-end;
+  }
+  #question {
+    flex: 1; resize: none; border: 1px solid #e0e0de; border-radius: 8px;
+    padding: 8px 10px; font-size: 13px; font-family: inherit; line-height: 1.5;
+    outline: none; max-height: 120px; color: #1a1a1a; background: #fafaf9; transition: border-color 0.15s;
+  }
+  #question:focus { border-color: #aaa; background: #fff; }
+  #send {
+    background: #1a1a1a; color: #fff; border: none; border-radius: 8px;
+    width: 34px; height: 34px; cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  #send:hover { background: #333; }
+  #send:disabled { background: #ccc; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="logo">✦ Claude Sidekick</span>
+  <span class="status">
+    <span class="dot" id="dot"></span>
+    <span id="status-text">检查连接...</span>
+  </span>
+</header>
+
+<div id="toolbar">
+  <button id="new-chat" title="结束当前会话并开启新对话，原对话自动复制到剪贴板">🆕 新对话</button>
+  <button id="copy-all" title="把整个对话内容复制到剪贴板">📋 复制全部</button>
+</div>
+
+<div id="context-bar">
+  <span id="context-text"></span>
+  <button id="clear-ctx" title="清除上下文">×</button>
+</div>
+
+<div id="messages">
+  <div class="empty-hint" id="hint">
+    <strong>✦</strong>
+    选中页面文字后点击浮动按钮<br>
+    或右键选择「用 Claude 分析」<br>
+    也可以直接输入问题
+  </div>
+</div>
+
+<div id="input-area">
+  <textarea id="question" rows="1" placeholder="输入问题，或直接发送选中内容..."></textarea>
+  <button id="send">↑</button>
+</div>
+
+<!-- MV3 扩展页面 CSP 禁止内联脚本，必须用外部文件 -->
+<script src="markdown.js"></script>
+<script src="panel.js"></script>
+</body>
+</html>
