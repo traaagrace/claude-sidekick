@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude Sidekick",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "选中页面内容，调用本地 Claude CLI 进行分析",
   "minimum_chrome_version": "102",
   "permissions": [
