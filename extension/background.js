@@ -9,18 +9,19 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 // 把新选中写入 selections 数组：与已有段完全相同 → 忽略（去重优先，待替换状态保留）；
-// 有待替换标记且目标仍存在 → 原位替换；否则 → 追加。完成后清除替换标记并打开面板。
+// 有待替换标记且目标仍存在 → 原位替换；否则 → 追加。
 // chrome.storage 无事务原语：用 Promise 链串行化读-改-写，防止连续选中互相覆盖。
+// 注意：sidePanel.open() 不能放进这条链——普通 Promise 微任务会丢失用户手势上下文，
+// 导致 open() 抛 "may only be called in response to a user gesture"。必须在事件监听器里同步调用。
 let writeQueue = Promise.resolve();
 
-function addSelection(text, tabId) {
+function addSelection(text) {
   writeQueue = writeQueue.then(() => new Promise((done) => {
     chrome.storage.session.get(["selections", "replaceTargetId"], (res) => {
       const selections = res.selections || [];
       const replaceTargetId = res.replaceTargetId ?? null;
 
       if (selections.some((s) => s.text === text)) {
-        chrome.sidePanel.open({ tabId });
         done();
         return;
       }
@@ -31,16 +32,15 @@ function addSelection(text, tabId) {
         : [...selections, { id: crypto.randomUUID(), text, addedAt: Date.now() }];
 
       // 替换完成（或标记指向已删除条目而失效）后，统一清除标记
-      chrome.storage.session.set({ selections: next, replaceTargetId: null }, () => {
-        chrome.sidePanel.open({ tabId });
-        done();
-      });
+      chrome.storage.session.set({ selections: next, replaceTargetId: null }, done);
     });
   }));
 }
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  if (info.menuItemId === "ask-claude") addSelection(info.selectionText, tab.id);
+  if (info.menuItemId !== "ask-claude") return;
+  chrome.sidePanel.open({ tabId: tab.id }); // 同步调用，保住用户手势
+  addSelection(info.selectionText);
 });
 
 chrome.action.onClicked.addListener((tab) => {
@@ -48,7 +48,9 @@ chrome.action.onClicked.addListener((tab) => {
 });
 
 chrome.runtime.onMessage.addListener((msg, sender) => {
-  if (msg.type === "SELECTED_TEXT") addSelection(msg.text, sender.tab.id);
+  if (msg.type !== "SELECTED_TEXT") return;
+  chrome.sidePanel.open({ tabId: sender.tab.id }); // 同步调用，保住用户手势
+  addSelection(msg.text);
 });
 
 // 健康检查：临时拉起 host 发 ping，收到 pong 即就绪（host 随即被销毁）
