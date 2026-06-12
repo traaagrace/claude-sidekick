@@ -1,11 +1,11 @@
-let currentContext = "";
+let selections = []; // 选段数组 [{id, text, addedAt}]，单一数据源在 chrome.storage.session
+let replaceTargetId = null; // 待替换条目 id；非空时下一次页面选中替换该条
 let isStreaming = false;
 let sessionId = null; // claude 会话 ID：同一对话框内续聊，点「新对话」清空
 
 const dot = document.getElementById("dot");
 const statusText = document.getElementById("status-text");
 const contextBar = document.getElementById("context-bar");
-const contextTextEl = document.getElementById("context-text");
 const messagesEl = document.getElementById("messages");
 const questionEl = document.getElementById("question");
 const sendBtn = document.getElementById("send");
@@ -72,25 +72,89 @@ newChatBtn.addEventListener("click", () => {
   setTimeout(checkBridge, 2000); // 稍后恢复正常状态显示
 });
 
-// ---------- 选中文字上下文 ----------
-chrome.storage.session.onChanged.addListener((changes) => {
-  if (changes.selectedText) setContext(changes.selectedText.newValue);
-});
-chrome.storage.session.get("selectedText", (res) => {
-  if (res.selectedText) setContext(res.selectedText);
+// ---------- 选段上下文（多段共存） ----------
+const contextSummaryEl = document.getElementById("context-summary");
+const contextListEl = document.getElementById("context-list");
+
+// 启动加载；旧版单条 key（selectedText）迁移为一条选段后删除，渲染交给 onChanged
+chrome.storage.session.get(["selections", "replaceTargetId", "selectedText"], (res) => {
+  if (res.selectedText) {
+    const migrated = [...(res.selections || []), { id: crypto.randomUUID(), text: res.selectedText, addedAt: Date.now() }];
+    chrome.storage.session.set({ selections: migrated });
+    chrome.storage.session.remove("selectedText");
+    return;
+  }
+  applyState(res.selections, res.replaceTargetId);
 });
 
-function setContext(text) {
-  currentContext = text;
-  contextTextEl.textContent = `📎 ${text.slice(0, 80)}${text.length > 80 ? "…" : ""}`;
+chrome.storage.session.onChanged.addListener((changes) => {
+  if (!changes.selections && !changes.replaceTargetId) return;
+  chrome.storage.session.get(["selections", "replaceTargetId"], (res) => {
+    applyState(res.selections, res.replaceTargetId);
+  });
+});
+
+function applyState(nextSelections, nextReplaceTargetId) {
+  selections = nextSelections || [];
+  replaceTargetId = nextReplaceTargetId || null;
+  renderContextBar();
+}
+
+function renderContextBar() {
+  if (!selections.length) {
+    contextBar.classList.remove("visible");
+    return;
+  }
+
+  const totalChars = selections.reduce((n, s) => n + s.text.length, 0);
+  const replacingIndex = selections.findIndex((s) => s.id === replaceTargetId);
+  contextSummaryEl.textContent = replacingIndex >= 0
+    ? `📎 去页面选中新内容以替换第 ${replacingIndex + 1} 段`
+    : `📎 已选 ${selections.length} 段 · 共 ${totalChars} 字`;
+
+  contextListEl.replaceChildren(...selections.map((s, i) => buildCtxItem(s, i)));
   contextBar.classList.add("visible");
   questionEl.focus();
 }
 
+function buildCtxItem(sel, index) {
+  const item = document.createElement("div");
+  item.className = "ctx-item" + (sel.id === replaceTargetId ? " replacing" : "");
+
+  const textEl = document.createElement("span");
+  textEl.className = "ctx-text";
+  textEl.textContent = `${index + 1}. ${sel.text.slice(0, 80)}${sel.text.length > 80 ? "…" : ""}`;
+
+  const replaceBtn = document.createElement("button");
+  replaceBtn.textContent = "⇄";
+  replaceBtn.title = sel.id === replaceTargetId ? "取消替换" : "用下一次页面选中替换这段";
+  replaceBtn.addEventListener("click", () => {
+    chrome.storage.session.set({ replaceTargetId: sel.id === replaceTargetId ? null : sel.id });
+  });
+
+  const delBtn = document.createElement("button");
+  delBtn.textContent = "×";
+  delBtn.title = "删除这段";
+  delBtn.addEventListener("click", () => {
+    chrome.storage.session.set({
+      selections: selections.filter((s) => s.id !== sel.id),
+      ...(sel.id === replaceTargetId ? { replaceTargetId: null } : {}),
+    });
+  });
+
+  item.append(textEl, replaceBtn, delBtn);
+  return item;
+}
+
+// 多段拼接为单字符串交给 host（host 零改动）；仅 1 段时不加编号头，保持旧版 prompt 形态
+function buildContext() {
+  if (!selections.length) return "";
+  if (selections.length === 1) return selections[0].text;
+  return selections.map((s, i) => `【选段 ${i + 1}】\n${s.text}`).join("\n\n");
+}
+
 document.getElementById("clear-ctx").addEventListener("click", () => {
-  currentContext = "";
-  contextBar.classList.remove("visible");
-  chrome.storage.session.remove("selectedText");
+  chrome.storage.session.set({ selections: [], replaceTargetId: null });
 });
 
 // ---------- 输入区 ----------
@@ -133,9 +197,11 @@ function addMsg(role, text) {
 function doSend() {
   if (isStreaming) return;
   const question = questionEl.value.trim();
-  if (!question && !currentContext) return;
+  const context = buildContext();
+  if (!question && !context) return;
 
-  addMsg("user", currentContext ? `📎 上下文 + ${question || "（分析选中内容）"}` : question);
+  const ctxLabel = selections.length > 1 ? `${selections.length} 段上下文` : "上下文";
+  addMsg("user", context ? `📎 ${ctxLabel} + ${question || "（分析选中内容）"}` : question);
   questionEl.value = "";
   questionEl.style.height = "auto";
 
@@ -192,5 +258,5 @@ function doSend() {
     }
   });
 
-  port.postMessage({ context: currentContext, question, sessionId });
+  port.postMessage({ context, question, sessionId });
 }
