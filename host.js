@@ -23,7 +23,8 @@ const LOG_FILE = path.join(__dirname, "logs", "host.log");
 let logStream = null;
 if (process.env.CLAUDE_LOG !== "0") {
   try {
-    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    // 日志含 prompt 原文：目录/文件收紧为仅本用户可读写（Windows 忽略 mode，无副作用）
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true, mode: 0o700 });
     let size = 0;
     try { size = fs.statSync(LOG_FILE).size; } catch { /* 文件尚不存在 */ }
     if (size > LOG_MAX_BYTES) {
@@ -31,7 +32,8 @@ if (process.env.CLAUDE_LOG !== "0") {
       fs.rmSync(LOG_FILE + ".old", { force: true });
       fs.renameSync(LOG_FILE, LOG_FILE + ".old");
     }
-    logStream = fs.createWriteStream(LOG_FILE, { flags: "a" });
+    logStream = fs.createWriteStream(LOG_FILE, { flags: "a", mode: 0o600 });
+    // createWriteStream 懒打开：真实失败（权限/磁盘）走异步 error 事件，在此降级
     logStream.on("error", () => (logStream = null));
   } catch {
     logStream = null;
@@ -40,6 +42,8 @@ if (process.env.CLAUDE_LOG !== "0") {
 
 function logFile(text) {
   if (!logStream) return;
+  // write 失败实际由上面的 error 事件降级；try/catch 仅兜 stream 已销毁等同步异常。
+  // 不做背压控制：host 为短命进程、日志量小，磁盘异常时宁可静默丢日志也不阻塞问答
   try {
     logStream.write(`${new Date().toISOString()} ${text}\n`);
   } catch {
@@ -82,7 +86,10 @@ process.stdin.on("data", (chunk) => {
 let currentChild = null;
 process.stdin.on("end", () => {
   if (currentChild) currentChild.kill();
-  process.exit(0);
+  if (!logStream) process.exit(0);
+  // 退出前 flush 日志，避免最后几行（如 [done]）丢失；300ms 兜底保证必然退出
+  setTimeout(() => process.exit(0), 300);
+  logStream.end(() => process.exit(0));
 });
 
 // ---------- 旧版 CLI 不支持逐字流式（--include-partial-messages），探测一次 ----------
