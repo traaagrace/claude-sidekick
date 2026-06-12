@@ -164,6 +164,139 @@ document.getElementById("clear-ctx").addEventListener("click", () => {
   chrome.storage.session.set({ selections: [], replaceTargetId: null });
 });
 
+// ---------- 自定义场景 ----------
+let scenarios = []; // 场景库 [{id, name, prompt}]，持久存 chrome.storage.local
+let activeScenarioId = null; // 当前激活场景 id；面板关闭即重置（与会话生命周期一致）
+let injectedScenario = null; // 本会话已注入的 {id, prompt} 快照；按 id+prompt 比较决定是否重新注入
+let editingScenarioId = null; // 管理表单当前编辑的场景 id；null = 新建
+
+const scenarioBarEl = document.getElementById("scenario-bar");
+const scenarioManagerEl = document.getElementById("scenario-manager");
+const scenarioListEl = document.getElementById("scenario-list");
+const scenarioFormEl = document.getElementById("scenario-form");
+const scenarioNameEl = document.getElementById("scenario-name");
+const scenarioPromptEl = document.getElementById("scenario-prompt");
+const scenarioFormErrEl = document.getElementById("scenario-form-err");
+
+const PRESET_SCENARIOS = [
+  { name: "翻译", prompt: "你是专业译者。把内容准确翻译成中文；专业术语保留原文并加简短注释；最后用一两句话说明整体语境或关键难点。" },
+  { name: "总结要点", prompt: "用条目式列出内容的核心要点，按重要性排序，每条一句话；最后给出一句话的整体结论。" },
+  { name: "代码解读", prompt: "你是资深工程师。解释这段代码的功能、关键逻辑与执行流程，指出潜在问题或坑，必要时给出改进建议。" },
+  { name: "润色改写", prompt: "在保持原意的前提下润色这段文字，使其更通顺、专业；输出润色后的全文，并简要列出主要修改点。" },
+];
+
+// 启动加载；预置场景只播种一次（scenariosSeeded 标记），用户删除后不复活
+chrome.storage.local.get(["scenarios", "scenariosSeeded"], (res) => {
+  if (!res.scenariosSeeded) {
+    const seeded = PRESET_SCENARIOS.map((p) => ({ id: crypto.randomUUID(), ...p }));
+    chrome.storage.local.set({ scenarios: seeded, scenariosSeeded: true });
+    return; // onChanged 触发渲染
+  }
+  scenarios = res.scenarios || [];
+  renderScenarioBar();
+});
+
+chrome.storage.local.onChanged.addListener((changes) => {
+  if (!changes.scenarios) return;
+  scenarios = changes.scenarios.newValue || [];
+  // 激活中的场景被删除 → 自动取消激活
+  if (activeScenarioId && !scenarios.some((s) => s.id === activeScenarioId)) activeScenarioId = null;
+  renderScenarioBar();
+  renderScenarioManager();
+});
+
+function renderScenarioBar() {
+  const chips = scenarios.map((s) => {
+    const chip = document.createElement("button");
+    chip.className = "scenario-chip" + (s.id === activeScenarioId ? " active" : "");
+    chip.textContent = s.name;
+    chip.title = s.prompt;
+    chip.addEventListener("click", () => {
+      activeScenarioId = s.id === activeScenarioId ? null : s.id; // 再点一次取消激活
+      renderScenarioBar();
+    });
+    return chip;
+  });
+
+  const manageBtn = document.createElement("button");
+  manageBtn.className = "scenario-chip manage";
+  manageBtn.textContent = "⚙";
+  manageBtn.title = "管理场景";
+  manageBtn.addEventListener("click", toggleScenarioManager);
+
+  scenarioBarEl.replaceChildren(...chips, manageBtn);
+}
+
+function toggleScenarioManager() {
+  const visible = scenarioManagerEl.classList.toggle("visible");
+  if (visible) renderScenarioManager();
+}
+
+function renderScenarioManager() {
+  if (!scenarioManagerEl.classList.contains("visible")) return;
+
+  const rows = scenarios.map((s) => {
+    const row = document.createElement("div");
+    row.className = "scenario-row";
+
+    const nameEl = document.createElement("span");
+    nameEl.className = "scenario-row-name";
+    nameEl.textContent = s.name;
+    nameEl.title = s.prompt;
+
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "✎";
+    editBtn.title = "编辑";
+    editBtn.addEventListener("click", () => openScenarioForm(s));
+
+    const delBtn = document.createElement("button");
+    delBtn.textContent = "×";
+    delBtn.title = "删除";
+    delBtn.addEventListener("click", () => {
+      chrome.storage.local.set({ scenarios: scenarios.filter((x) => x.id !== s.id) });
+    });
+
+    row.append(nameEl, editBtn, delBtn);
+    return row;
+  });
+
+  const addBtn = document.createElement("button");
+  addBtn.id = "scenario-add";
+  addBtn.textContent = "＋ 新建场景";
+  addBtn.addEventListener("click", () => openScenarioForm(null));
+
+  scenarioListEl.replaceChildren(...rows, addBtn);
+}
+
+function openScenarioForm(scenario) {
+  editingScenarioId = scenario ? scenario.id : null;
+  scenarioNameEl.value = scenario ? scenario.name : "";
+  scenarioPromptEl.value = scenario ? scenario.prompt : "";
+  scenarioFormErrEl.textContent = "";
+  scenarioFormEl.classList.add("visible");
+  scenarioNameEl.focus();
+}
+
+document.getElementById("scenario-save").addEventListener("click", () => {
+  const name = scenarioNameEl.value.trim();
+  const prompt = scenarioPromptEl.value.trim();
+  if (!name || !prompt) {
+    scenarioFormErrEl.textContent = "名称和提示词都不能为空";
+    return;
+  }
+  // 编辑目标已被删除时按新建处理
+  const exists = editingScenarioId && scenarios.some((s) => s.id === editingScenarioId);
+  const next = exists
+    ? scenarios.map((s) => (s.id === editingScenarioId ? { ...s, name, prompt } : s))
+    : [...scenarios, { id: crypto.randomUUID(), name, prompt }];
+  chrome.storage.local.set({ scenarios: next });
+  scenarioFormEl.classList.remove("visible");
+});
+
+document.getElementById("scenario-cancel").addEventListener("click", () => {
+  scenarioFormEl.classList.remove("visible");
+});
+
 // ---------- 输入区 ----------
 questionEl.addEventListener("input", () => {
   questionEl.style.height = "auto";
