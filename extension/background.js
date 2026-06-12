@@ -117,7 +117,7 @@ chrome.runtime.onConnect.addListener((port) => {
       }
     });
 
-    native.postMessage({ type: "ask", context: msg.context, question: msg.question, sessionId: msg.sessionId });
+    native.postMessage({ type: "ask", context: msg.context, question: msg.question, scenario: msg.scenario, sessionId: msg.sessionId });
   });
 
   port.onDisconnect.addListener(() => {

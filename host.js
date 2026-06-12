@@ -68,16 +68,20 @@ function handleMessage(msg) {
     return;
   }
   if (msg.type === "ask") {
-    runClaude(msg.context, msg.question, msg.sessionId);
+    runClaude(msg.context, msg.question, msg.scenario, msg.sessionId);
     return;
   }
   send({ type: "error", error: "未知消息类型：" + msg.type });
 }
 
-async function runClaude(context, question, resumeId) {
-  const prompt = context
-    ? `以下是页面选中的内容：\n\n---\n${context}\n---\n\n${question || "请根据以上内容给我一个总结或分析"}`
-    : question || "你好";
+async function runClaude(context, question, scenario, resumeId) {
+  // 分段拼 prompt：场景指令置于最前。scenario 为空时各分支输出与旧版逐字节一致
+  const sections = [];
+  if (scenario) sections.push(`【场景要求】\n${scenario}`);
+  if (context) sections.push(`以下是页面选中的内容：\n\n---\n${context}\n---`);
+  const fallback = scenario ? "请按上述场景要求处理" : context ? "请根据以上内容给我一个总结或分析" : "你好";
+  sections.push(question || fallback);
+  const prompt = sections.join("\n\n");
 
   // stream-json：claude 输出 NDJSON 事件流；逐字增量标志仅在 CLI 支持时附加
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
