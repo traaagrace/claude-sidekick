@@ -7,9 +7,45 @@
  */
 
 const { spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 
 // install.js 会在包装器里写入 claude 的绝对路径（Chrome 启动的进程拿不到 shell 的 PATH）
 const CLAUDE = process.env.CLAUDE_CLI || "claude";
+
+// ---------- 文件日志 ----------
+// 默认开启，包装器里设 CLAUDE_LOG=0 可关闭；日志含 prompt 全文（选中的页面原文）
+// 清除规则：host 每次启动检查 host.log 超过 2MB 即轮转为 host.log.old（覆盖旧的），
+// 磁盘占用上限 ≈ 4MB。任何日志失败静默降级为仅 stderr，不影响问答主流程。
+const LOG_MAX_BYTES = 2 * 1024 * 1024;
+const LOG_FILE = path.join(__dirname, "logs", "host.log");
+
+let logStream = null;
+if (process.env.CLAUDE_LOG !== "0") {
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    let size = 0;
+    try { size = fs.statSync(LOG_FILE).size; } catch { /* 文件尚不存在 */ }
+    if (size > LOG_MAX_BYTES) {
+      // Windows 的 rename 不覆盖已存在目标，先删旧 .old
+      fs.rmSync(LOG_FILE + ".old", { force: true });
+      fs.renameSync(LOG_FILE, LOG_FILE + ".old");
+    }
+    logStream = fs.createWriteStream(LOG_FILE, { flags: "a" });
+    logStream.on("error", () => (logStream = null));
+  } catch {
+    logStream = null;
+  }
+}
+
+function logFile(text) {
+  if (!logStream) return;
+  try {
+    logStream.write(`${new Date().toISOString()} ${text}\n`);
+  } catch {
+    logStream = null;
+  }
+}
 
 // ---------- 发送帧 ----------
 function send(msg) {
@@ -20,7 +56,9 @@ function send(msg) {
 }
 
 function logErr(...parts) {
-  process.stderr.write(parts.join(" ") + "\n");
+  const line = parts.join(" ");
+  process.stderr.write(line + "\n");
+  logFile(line);
 }
 
 // ---------- 接收帧 ----------
@@ -84,6 +122,10 @@ async function runClaude(context, question, scenario, resumeId) {
   sections.push(question || fallback);
   const prompt = sections.join("\n\n");
 
+  const startedAt = Date.now();
+  logFile(`[ask] resume=${resumeId || "无"} ctx=${(context || "").length}字 scenario=${(scenario || "").length}字 q=${question || "（空）"}`);
+  logFile(`[prompt] ----------\n${prompt}\n----------`);
+
   // stream-json：claude 输出 NDJSON 事件流；逐字增量标志仅在 CLI 支持时附加
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
   // 续接同一会话；ID 来自插件消息，严格校验格式再上命令行（shell:true）
@@ -140,11 +182,13 @@ async function runClaude(context, question, scenario, resumeId) {
     if (sentChars === 0 && code !== 0) {
       send({ type: "chunk", text: `[错误] claude 退出码 ${code}` });
     }
+    logFile(`[done] code=${code} session=${lastSessionId || "无"} 耗时=${((Date.now() - startedAt) / 1000).toFixed(1)}s 输出=${sentChars}字`);
     send({ type: "done", code, sessionId: lastSessionId });
   });
 
   child.on("error", (err) => {
     currentChild = null;
+    logFile(`[error] 无法启动 claude：${err.message}`);
     send({ type: "error", error: `无法启动 claude：${err.message}` });
   });
 }
