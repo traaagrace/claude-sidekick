@@ -80,28 +80,34 @@ const contextListEl = document.getElementById("context-list");
 chrome.storage.session.get(["selections", "replaceTargetId", "selectedText"], (res) => {
   if (res.selectedText) {
     const migrated = [...(res.selections || []), { id: crypto.randomUUID(), text: res.selectedText, addedAt: Date.now() }];
-    chrome.storage.session.set({ selections: migrated });
-    chrome.storage.session.remove("selectedText");
+    // 先写新数组、回调里再删旧 key，避免两个异步操作的 onChanged 时序交错
+    chrome.storage.session.set({ selections: migrated }, () => {
+      chrome.storage.session.remove("selectedText");
+    });
     return;
   }
   applyState(res.selections, res.replaceTargetId);
 });
 
+// onChanged 自带 newValue，直接消费，避免二次 get 的时序窗口
 chrome.storage.session.onChanged.addListener((changes) => {
   if (!changes.selections && !changes.replaceTargetId) return;
-  chrome.storage.session.get(["selections", "replaceTargetId"], (res) => {
-    applyState(res.selections, res.replaceTargetId);
-  });
+  if (changes.selections) selections = changes.selections.newValue || [];
+  if (changes.replaceTargetId) replaceTargetId = changes.replaceTargetId.newValue ?? null;
+  renderContextBar();
 });
 
 function applyState(nextSelections, nextReplaceTargetId) {
   selections = nextSelections || [];
-  replaceTargetId = nextReplaceTargetId || null;
+  replaceTargetId = nextReplaceTargetId ?? null;
   renderContextBar();
 }
 
+let lastRenderedCount = 0; // 仅在新选段到达（数量增加）时聚焦输入框，删除/切换替换目标不抢焦点
+
 function renderContextBar() {
   if (!selections.length) {
+    lastRenderedCount = 0;
     contextBar.classList.remove("visible");
     return;
   }
@@ -114,7 +120,8 @@ function renderContextBar() {
 
   contextListEl.replaceChildren(...selections.map((s, i) => buildCtxItem(s, i)));
   contextBar.classList.add("visible");
-  questionEl.focus();
+  if (selections.length > lastRenderedCount) questionEl.focus();
+  lastRenderedCount = selections.length;
 }
 
 function buildCtxItem(sel, index) {
