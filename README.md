@@ -84,6 +84,15 @@ set "CLAUDE_MODEL=haiku"     (Windows, host.bat)
 export CLAUDE_MODEL=haiku    (Mac/Linux, host.sh)
 ```
 
+## 日志
+
+host 默认把执行日志写到仓库的 `logs/host.log`（含发给 Claude 的完整 prompt、
+耗时、退出码与 CLI 报错），用于排查问题与验证上下文/场景注入行为：
+
+- 超过 2MB 自动轮转为 `host.log.old`（仅保留一份历史，磁盘占用上限 ≈ 4MB）
+- 不想记录：编辑包装器（`host.bat` / `host.sh`）加 `CLAUDE_LOG=0` 环境变量
+- 日志包含选中的页面原文，注意隐私
+
 ## 卸载
 
 - **Windows**：双击 `uninstall.cmd`（或运行 `node uninstall.js`）
