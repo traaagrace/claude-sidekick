@@ -154,6 +154,55 @@
   }
   #send:hover { background: #333; }
   #send:disabled { background: #ccc; cursor: not-allowed; }
+
+  /* ---- 场景胶囊条（输入区上方） ---- */
+  #scenario-bar {
+    background: #fff; border-top: 1px solid #e5e5e3;
+    padding: 6px 12px 0; display: flex; gap: 6px; overflow-x: auto;
+  }
+  .scenario-chip {
+    flex-shrink: 0; background: #fafaf9; border: 1px solid #e0e0de; border-radius: 12px;
+    cursor: pointer; font-size: 12px; color: #555; padding: 3px 10px; line-height: 1.4;
+    max-width: 96px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  .scenario-chip:hover { background: #f0f0ee; color: #1a1a1a; border-color: #ccc; }
+  .scenario-chip.active { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .scenario-chip.manage { font-size: 13px; padding: 3px 8px; }
+
+  /* ---- 场景管理视图（消息区上方，默认隐藏） ---- */
+  #scenario-manager {
+    display: none; background: #fff; border-bottom: 1px solid #e5e5e3;
+    padding: 10px 14px; max-height: 50vh; overflow-y: auto;
+  }
+  #scenario-manager.visible { display: block; }
+  .scenario-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 13px; }
+  .scenario-row-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .scenario-row button {
+    cursor: pointer; color: #888; background: none; border: none; padding: 0 4px;
+    font-size: 13px; line-height: 1;
+  }
+  .scenario-row button:hover { color: #1a1a1a; }
+  #scenario-add {
+    margin-top: 6px; background: #fafaf9; border: 1px dashed #ccc; border-radius: 6px;
+    cursor: pointer; font-size: 12px; color: #555; padding: 4px 10px; width: 100%;
+  }
+  #scenario-add:hover { background: #f0f0ee; color: #1a1a1a; }
+  #scenario-form { display: none; margin-top: 8px; border-top: 1px solid #eee; padding-top: 8px; }
+  #scenario-form.visible { display: block; }
+  #scenario-form input, #scenario-form textarea {
+    width: 100%; border: 1px solid #e0e0de; border-radius: 6px; padding: 6px 8px;
+    font-size: 12px; font-family: inherit; margin-bottom: 6px; background: #fafaf9; outline: none;
+  }
+  #scenario-form input:focus, #scenario-form textarea:focus { border-color: #aaa; background: #fff; }
+  #scenario-form textarea { resize: vertical; min-height: 64px; }
+  #scenario-form-err { color: #e05252; font-size: 11px; margin-right: auto; }
+  .scenario-form-actions { display: flex; align-items: center; gap: 8px; }
+  .scenario-form-actions button {
+    cursor: pointer; font-size: 12px; border-radius: 6px; padding: 4px 12px;
+    border: 1px solid #e0e0de; background: #fafaf9; color: #555;
+  }
+  #scenario-save { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
 </style>
 </head>
 <body>
@@ -169,6 +218,19 @@
 <div id="toolbar">
   <button id="new-chat" title="结束当前会话并开启新对话，原对话自动复制到剪贴板">🆕 新对话</button>
   <button id="copy-all" title="把整个对话内容复制到剪贴板">📋 复制全部</button>
+</div>
+
+<div id="scenario-manager">
+  <div id="scenario-list"></div>
+  <div id="scenario-form">
+    <input id="scenario-name" placeholder="场景名称（如：翻译）" maxlength="20" />
+    <textarea id="scenario-prompt" placeholder="提示词指令（如：你是专业译者，把内容准确翻译成中文……）"></textarea>
+    <div class="scenario-form-actions">
+      <span id="scenario-form-err"></span>
+      <button id="scenario-cancel">取消</button>
+      <button id="scenario-save">保存</button>
+    </div>
+  </div>
 </div>
 
 <div id="context-bar">
@@ -187,6 +249,8 @@
     也可以直接输入问题
   </div>
 </div>
+
+<div id="scenario-bar"></div>
 
 <div id="input-area">
   <textarea id="question" rows="1" placeholder="输入问题，或直接发送选中内容..."></textarea>
