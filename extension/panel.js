@@ -189,18 +189,19 @@ const PRESET_SCENARIOS = [
 // 启动加载；预置场景只播种一次（scenariosSeeded 标记），用户删除后不复活
 chrome.storage.local.get(["scenarios", "scenariosSeeded"], (res) => {
   if (!res.scenariosSeeded) {
-    const seeded = PRESET_SCENARIOS.map((p) => ({ id: crypto.randomUUID(), ...p }));
-    chrome.storage.local.set({ scenarios: seeded, scenariosSeeded: true });
-    return; // onChanged 触发渲染
+    scenarios = PRESET_SCENARIOS.map((p) => ({ id: crypto.randomUUID(), ...p }));
+    chrome.storage.local.set({ scenarios, scenariosSeeded: true });
+  } else {
+    scenarios = res.scenarios || [];
   }
-  scenarios = res.scenarios || [];
   renderScenarioBar();
 });
 
 chrome.storage.local.onChanged.addListener((changes) => {
   if (!changes.scenarios) return;
   scenarios = changes.scenarios.newValue || [];
-  // 激活中的场景被删除 → 自动取消激活
+  // 激活中的场景被删除 → 自动取消激活；injectedScenario 不清——它记录的是会话历史里
+  // 已经发生的注入事实，留着才能在重新激活同一场景时正确判断「无需重复注入」
   if (activeScenarioId && !scenarios.some((s) => s.id === activeScenarioId)) activeScenarioId = null;
   renderScenarioBar();
   renderScenarioManager();
@@ -254,7 +255,10 @@ function renderScenarioManager() {
     delBtn.textContent = "×";
     delBtn.title = "删除";
     delBtn.addEventListener("click", () => {
-      chrome.storage.local.set({ scenarios: scenarios.filter((x) => x.id !== s.id) });
+      // 读-改-写：多个 Chrome 窗口可各开一个面板，避免用本地快照覆盖并发写入
+      chrome.storage.local.get("scenarios", (res) => {
+        chrome.storage.local.set({ scenarios: (res.scenarios || []).filter((x) => x.id !== s.id) });
+      });
     });
 
     row.append(nameEl, editBtn, delBtn);
@@ -285,12 +289,15 @@ document.getElementById("scenario-save").addEventListener("click", () => {
     scenarioFormErrEl.textContent = "名称和提示词都不能为空";
     return;
   }
-  // 编辑目标已被删除时按新建处理
-  const exists = editingScenarioId && scenarios.some((s) => s.id === editingScenarioId);
-  const next = exists
-    ? scenarios.map((s) => (s.id === editingScenarioId ? { ...s, name, prompt } : s))
-    : [...scenarios, { id: crypto.randomUUID(), name, prompt }];
-  chrome.storage.local.set({ scenarios: next });
+  // 读-改-写（防多窗口并发覆盖）；编辑目标已被删除时按新建处理
+  chrome.storage.local.get("scenarios", (res) => {
+    const latest = res.scenarios || [];
+    const exists = editingScenarioId && latest.some((s) => s.id === editingScenarioId);
+    const next = exists
+      ? latest.map((s) => (s.id === editingScenarioId ? { ...s, name, prompt } : s))
+      : [...latest, { id: crypto.randomUUID(), name, prompt }];
+    chrome.storage.local.set({ scenarios: next });
+  });
   scenarioFormEl.classList.remove("visible");
 });
 

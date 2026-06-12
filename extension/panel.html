@@ -157,7 +157,7 @@
 
   /* ---- 场景胶囊条（输入区上方） ---- */
   #scenario-bar {
-    background: #fff; border-top: 1px solid #e5e5e3;
+    background: #fff; /* 分隔线交给相邻 #input-area 的 border-top，避免双线 */
     padding: 6px 12px 0; display: flex; gap: 6px; overflow-x: auto;
   }
   .scenario-chip {
@@ -224,7 +224,7 @@
   <div id="scenario-list"></div>
   <div id="scenario-form">
     <input id="scenario-name" placeholder="场景名称（如：翻译）" maxlength="20" />
-    <textarea id="scenario-prompt" placeholder="提示词指令（如：你是专业译者，把内容准确翻译成中文……）"></textarea>
+    <textarea id="scenario-prompt" maxlength="2000" placeholder="提示词指令（如：你是专业译者，把内容准确翻译成中文……）"></textarea>
     <div class="scenario-form-actions">
       <span id="scenario-form-err"></span>
       <button id="scenario-cancel">取消</button>

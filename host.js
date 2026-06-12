@@ -75,7 +75,8 @@ function handleMessage(msg) {
 }
 
 async function runClaude(context, question, scenario, resumeId) {
-  // 分段拼 prompt：场景指令置于最前。scenario 为空时各分支输出与旧版逐字节一致
+  // 分段拼 prompt：场景指令置于最前。scenario 为空时各分支输出与旧版逐字节一致——
+  // 等价性依赖「context 段末尾是 `---`（不带换行），由 join("\n\n") 补出旧版的 `---\n\n`」，改动拼接时务必保持
   const sections = [];
   if (scenario) sections.push(`【场景要求】\n${scenario}`);
   if (context) sections.push(`以下是页面选中的内容：\n\n---\n${context}\n---`);
