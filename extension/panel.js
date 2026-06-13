@@ -13,6 +13,7 @@ const sendBtn = document.getElementById("send");
 const hint = document.getElementById("hint");
 const copyAllBtn = document.getElementById("copy-all");
 const newChatBtn = document.getElementById("new-chat");
+const saveLocalBtn = document.getElementById("save-local");
 
 // 通过 background 对 native host 做健康检查（每次会临时拉起 host，频率不宜太高）
 function checkBridge() {
@@ -73,6 +74,72 @@ newChatBtn.addEventListener("click", () => {
   hint.style.display = "";
   statusText.textContent = transcript ? "已复制对话，新会话已开启" : "新会话已开启";
   setTimeout(checkBridge, 2000); // 稍后恢复正常状态显示
+});
+
+// ---------- 保存到本地 ----------
+// 自包含的流式处理：刻意不复用 doSend 的内部逻辑，避免改动已稳定的提问路径
+saveLocalBtn.addEventListener("click", () => {
+  if (isStreaming) return;
+  const transcript = getTranscript();
+  if (!transcript) {
+    statusText.textContent = "还没有可保存的对话";
+    setTimeout(checkBridge, 2000);
+    return;
+  }
+
+  statusText.textContent = "正在整理并保存到本地…";
+  const replyEl = addMsg("assistant", "");
+  replyEl.classList.add("streaming");
+  isStreaming = true;
+  sendBtn.disabled = true;
+
+  const port = chrome.runtime.connect({ name: "claude-stream" });
+
+  let rawReply = "";
+  let renderPending = false;
+  function renderReply() {
+    replyEl.dataset.raw = rawReply;
+    replyEl.innerHTML = renderMarkdown(rawReply);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+  function scheduleRender() {
+    if (renderPending) return;
+    renderPending = true;
+    requestAnimationFrame(() => { renderPending = false; renderReply(); });
+  }
+  function finish() {
+    renderReply();
+    replyEl.classList.remove("streaming");
+    isStreaming = false;
+    sendBtn.disabled = false;
+    port.disconnect();
+    setTimeout(checkBridge, 2000);
+  }
+
+  port.onMessage.addListener((msg) => {
+    if (msg.type === "chunk") {
+      rawReply += msg.text;
+      scheduleRender();
+    } else if (msg.type === "saved") {
+      rawReply += `\n\n---\n\n✅ 已保存到 \`${msg.path}\``;
+      scheduleRender();
+    } else if (msg.type === "done") {
+      if (msg.sessionId) sessionId = msg.sessionId; // 保存复用并推进会话，保持线性
+      finish();
+    } else if (msg.type === "error") {
+      rawReply += `\n\n[保存失败] ${msg.error}`;
+      finish();
+    }
+  });
+
+  port.onDisconnect.addListener(() => {
+    if (isStreaming) {
+      rawReply += "\n\n[连接中断]";
+      finish();
+    }
+  });
+
+  port.postMessage({ type: "save", transcript, sessionId });
 });
 
 // ---------- 选段上下文（多段共存） ----------
