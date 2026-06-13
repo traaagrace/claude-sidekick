@@ -218,13 +218,19 @@ function stamp(d) {
   return { date, time, human };
 }
 
-// 标题取总结首个非空行（去掉 Markdown 标题井号），截断 40 字
-function deriveTitle(summary) {
-  for (const line of summary.split("\n")) {
-    const t = line.replace(/^#+\s*/, "").trim();
-    if (t) return t.slice(0, 40);
+// 拆分总结为 {title, body}：首个非空行若是 Markdown 标题，用作标题并从正文剔除，
+// 避免文档 H1 与总结自带标题重复；否则标题取首行、正文保留全文。
+function splitSummary(summary) {
+  const lines = summary.split("\n");
+  let i = 0;
+  while (i < lines.length && !lines[i].trim()) i++; // 跳过前导空行
+  const first = (lines[i] || "").trim();
+  const m = first.match(/^#+\s*(.+)$/);
+  if (m) {
+    const body = lines.slice(i + 1).join("\n").trim();
+    return { title: m[1].trim().slice(0, 40), body };
   }
-  return "研究笔记";
+  return { title: first.slice(0, 40) || "研究笔记", body: summary.trim() };
 }
 
 // 文件名安全化：非字母/数字（含中日韩）替换为 -，截断 40 字
@@ -240,7 +246,7 @@ async function runSave(transcript, resumeId) {
   const startedAt = Date.now();
   logFile(`[save] resume=${resumeId || "无"} transcript=${(transcript || "").length}字`);
 
-  const instruction = "把我们刚才整场讨论总结成一篇结构化研究笔记（含标题、背景、关键要点、结论），只输出笔记正文的 Markdown，不要复述原始对话原文。";
+  const instruction = "把我们刚才整场讨论总结成一篇结构化研究笔记。要求：第一行用 `# ` 输出一个概括本次讨论【主题】的简短标题（不超过 20 字，必须反映实际讨论内容，禁止使用「你好」「奥北，你好」之类的问候语或开场白）；其后依次写背景、关键要点、结论。只输出笔记正文的 Markdown，不要复述原始对话原文。";
   // 能 resume 就靠会话上下文（省 token）；否则把 transcript 内联进 prompt（旧版 CLI 降级）
   const canResume = resumeId && /^[0-9a-zA-Z-]{8,64}$/.test(resumeId);
   const prompt = canResume
@@ -293,8 +299,8 @@ async function runSave(transcript, resumeId) {
     currentChild = null;
     // 总结失败也落盘：保证点击不白费，原始对话照常写入
     const ok = summary.trim().length > 0;
-    const summarySection = ok ? summary.trim() : "（总结生成失败，仅保留原始对话）";
-    const title = ok ? deriveTitle(summary) : "研究笔记";
+    const { title, body } = ok ? splitSummary(summary) : { title: "研究笔记", body: "" };
+    const summarySection = ok ? (body || title) : "（总结生成失败，仅保留原始对话）";
 
     const { date, time, human } = stamp(new Date());
     const fileName = `${date}-${time}-${slugify(title)}.md`;
