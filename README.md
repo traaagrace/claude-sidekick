@@ -65,6 +65,8 @@ node install.js <插件ID>
 - **多轮会话**：同一聊天框内连续提问自动续接同一会话，可以追问；
   点 header 的 **＋** 开启新对话（开启前会自动复制当前对话到剪贴板）
 - **复制**：header 的 **⧉** 复制全部对话；悬停单条消息出现 ⧉ 复制该条
+- **存本地**：点 header 的 **↗ 存本地**，Claude 把当前会话整理成研究笔记（总结 + 原始对话附录），
+  写入 host 同目录的 `notes/YYYYMMDD-HHMMSS-标题.md`，面板回显文件路径。总结失败时仍会保存原始对话。
 
 新版 claude CLI（支持 `--include-partial-messages`）下回答**逐字流式显示**；
 旧版自动降级为整段返回。升级 CLI：`claude update`。

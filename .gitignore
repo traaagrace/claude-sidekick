@@ -6,6 +6,9 @@ com.claude.sidekick.json
 # host 运行日志（含 prompt 原文）
 logs/
 
+# 保存的研究笔记（用户数据，不入库）
+notes/
+
 # 编辑器/系统
 .DS_Store
 *.swp
