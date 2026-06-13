@@ -117,7 +117,8 @@ chrome.runtime.onConnect.addListener((port) => {
       }
     });
 
-    native.postMessage({ type: "ask", context: msg.context, question: msg.question, scenario: msg.scenario, sessionId: msg.sessionId });
+    // ask 路径不带 type（默认 ask）；save 路径带 type:"save" 与 transcript。多余字段为 undefined，无副作用。
+    native.postMessage({ type: msg.type || "ask", context: msg.context, question: msg.question, scenario: msg.scenario, sessionId: msg.sessionId, transcript: msg.transcript });
   });
 
   port.onDisconnect.addListener(() => {
