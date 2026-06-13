@@ -13,6 +13,9 @@ const path = require("path");
 // install.js 会在包装器里写入 claude 的绝对路径（Chrome 启动的进程拿不到 shell 的 PATH）
 const CLAUDE = process.env.CLAUDE_CLI || "claude";
 
+// 保存研究笔记的目录（host.js 同目录下 notes/，已加入 .gitignore）
+const NOTES_DIR = path.join(__dirname, "notes");
+
 // ---------- 文件日志 ----------
 // 默认开启，包装器里设 CLAUDE_LOG=0 可关闭；日志含 prompt 全文（选中的页面原文）
 // 清除规则：host 每次启动检查 host.log 超过 2MB 即轮转为 host.log.old（覆盖旧的），
@@ -116,6 +119,10 @@ function handleMessage(msg) {
     runClaude(msg.context, msg.question, msg.scenario, msg.sessionId);
     return;
   }
+  if (msg.type === "save") {
+    runSave(msg.transcript, msg.sessionId);
+    return;
+  }
   send({ type: "error", error: "未知消息类型：" + msg.type });
 }
 
@@ -191,6 +198,120 @@ async function runClaude(context, question, scenario, resumeId) {
     }
     logFile(`[done] code=${code} session=${lastSessionId || "无"} 耗时=${((Date.now() - startedAt) / 1000).toFixed(1)}s 输出=${sentChars}字`);
     send({ type: "done", code, sessionId: lastSessionId });
+  });
+
+  child.on("error", (err) => {
+    currentChild = null;
+    logFile(`[error] 无法启动 claude：${err.message}`);
+    send({ type: "error", error: `无法启动 claude：${err.message}` });
+  });
+}
+
+// ---------- 保存研究笔记到本地 ----------
+function pad2(n) { return String(n).padStart(2, "0"); }
+
+// 文件名时间戳（本地 YYYYMMDD-HHMMSS）+ 正文可读时间
+function stamp(d) {
+  const date = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`;
+  const time = `${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+  const human = `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+  return { date, time, human };
+}
+
+// 标题取总结首个非空行（去掉 Markdown 标题井号），截断 40 字
+function deriveTitle(summary) {
+  for (const line of summary.split("\n")) {
+    const t = line.replace(/^#+\s*/, "").trim();
+    if (t) return t.slice(0, 40);
+  }
+  return "研究笔记";
+}
+
+// 文件名安全化：非字母/数字（含中日韩）替换为 -，截断 40 字
+function slugify(s) {
+  const out = (s || "")
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+  return out || "研究笔记";
+}
+
+async function runSave(transcript, resumeId) {
+  const startedAt = Date.now();
+  logFile(`[save] resume=${resumeId || "无"} transcript=${(transcript || "").length}字`);
+
+  const instruction = "把我们刚才整场讨论总结成一篇结构化研究笔记（含标题、背景、关键要点、结论），只输出笔记正文的 Markdown，不要复述原始对话原文。";
+  // 能 resume 就靠会话上下文（省 token）；否则把 transcript 内联进 prompt（旧版 CLI 降级）
+  const canResume = resumeId && /^[0-9a-zA-Z-]{8,64}$/.test(resumeId);
+  const prompt = canResume
+    ? instruction
+    : `${instruction}\n\n以下是原始对话：\n\n---\n${transcript}\n---`;
+
+  // 纯文本总结：不加 --allowedTools，无需任何工具权限
+  const args = ["-p", "--output-format", "stream-json", "--verbose"];
+  if (canResume) args.push("--resume", resumeId);
+  if (await supportsPartial()) args.push("--include-partial-messages");
+  if (process.env.CLAUDE_MODEL) args.push("--model", process.env.CLAUDE_MODEL);
+
+  const child = spawn(CLAUDE, args, { env: { ...process.env }, shell: true });
+  currentChild = child;
+  child.stdin.write(prompt);
+  child.stdin.end();
+
+  let lineBuf = "";
+  let summary = "";
+  let lastSessionId = canResume ? resumeId : null;
+
+  function handleEvent(ev) {
+    if (ev.session_id) lastSessionId = ev.session_id;
+    const delta = ev?.event?.delta;
+    if (ev.type === "stream_event" && delta?.type === "text_delta" && delta.text) {
+      summary += delta.text;
+      send({ type: "chunk", text: delta.text });
+      return;
+    }
+    // 旧版 CLI 无增量事件时，用最终 result 一次性返回
+    if (ev.type === "result" && summary.length === 0 && typeof ev.result === "string") {
+      summary += ev.result;
+      send({ type: "chunk", text: ev.result });
+    }
+  }
+
+  child.stdout.on("data", (data) => {
+    lineBuf += data.toString();
+    const lines = lineBuf.split("\n");
+    lineBuf = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try { handleEvent(JSON.parse(line)); } catch { /* 非 JSON 行忽略 */ }
+    }
+  });
+
+  child.stderr.on("data", (d) => logErr("[claude stderr]", d.toString()));
+
+  child.on("close", () => {
+    currentChild = null;
+    // 总结失败也落盘：保证点击不白费，原始对话照常写入
+    const ok = summary.trim().length > 0;
+    const summarySection = ok ? summary.trim() : "（总结生成失败，仅保留原始对话）";
+    const title = ok ? deriveTitle(summary) : "研究笔记";
+
+    const { date, time, human } = stamp(new Date());
+    const fileName = `${date}-${time}-${slugify(title)}.md`;
+    const content =
+      `# ${title}\n\n_${human}_\n\n## 总结\n\n${summarySection}\n\n---\n\n## 原始对话\n\n${transcript || "（无）"}\n`;
+
+    try {
+      fs.mkdirSync(NOTES_DIR, { recursive: true });
+      fs.writeFileSync(path.join(NOTES_DIR, fileName), content, "utf8");
+      const rel = path.join("notes", fileName);
+      logFile(`[saved] file=${rel} 总结=${ok ? "成功" : "失败"} 耗时=${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+      send({ type: "saved", path: rel });
+      send({ type: "done", sessionId: lastSessionId });
+    } catch (e) {
+      logFile(`[error] 写盘失败：${e.message}`);
+      send({ type: "error", error: "写盘失败：" + e.message });
+    }
   });
 
   child.on("error", (err) => {
