@@ -4,14 +4,17 @@
  * 由 Chrome 按需自动启动/销毁，无需手动运行。
  * stdio 协议：4 字节小端长度 + UTF-8 JSON
  * 注意：stdout 只能写协议帧，调试日志一律走 stderr
+ *
+ * 多后端：每条消息可带 provider 字段（claude / codex），由 providers/ 注册表解析。
+ * 本文件只保留与后端无关的通用逻辑：prompt 拼装、流式循环、日志、存笔记。
+ * 各后端的命令行参数 / 输出解析 / 流式能力 / session 校验封装在 providers/<id>.js。
  */
 
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-// install.js 会在包装器里写入 claude 的绝对路径（Chrome 启动的进程拿不到 shell 的 PATH）
-const CLAUDE = process.env.CLAUDE_CLI || "claude";
+const providers = require("./providers");
 
 // 保存研究笔记的目录（host.js 同目录下 notes/，已加入 .gitignore）
 const NOTES_DIR = path.join(__dirname, "notes");
@@ -85,7 +88,7 @@ process.stdin.on("data", (chunk) => {
   }
 });
 
-// Chrome 断开（面板关闭）→ 杀掉 claude 子进程并退出
+// Chrome 断开（面板关闭）→ 杀掉子进程并退出
 let currentChild = null;
 process.stdin.on("end", () => {
   if (currentChild) currentChild.kill();
@@ -95,39 +98,103 @@ process.stdin.on("end", () => {
   logStream.end(() => process.exit(0));
 });
 
-// ---------- 旧版 CLI 不支持逐字流式（--include-partial-messages），探测一次 ----------
-let partialPromise = null;
-function supportsPartial() {
-  if (!partialPromise) {
-    partialPromise = new Promise((resolve) => {
-      const probe = spawn(CLAUDE, ["--help"], { shell: true });
-      let helpText = "";
-      probe.stdout.on("data", (d) => (helpText += d.toString()));
-      probe.on("close", () => resolve(helpText.includes("--include-partial-messages")));
-      probe.on("error", () => resolve(false));
-    });
-  }
-  return partialPromise;
-}
-
 function handleMessage(msg) {
   if (msg.type === "ping") {
     send({ type: "pong" });
     return;
   }
+  const provider = providers.get(msg.provider);
   if (msg.type === "ask") {
-    runClaude(msg.context, msg.question, msg.scenario, msg.sessionId);
+    runAsk(provider, msg.context, msg.question, msg.scenario, msg.sessionId);
     return;
   }
   if (msg.type === "save") {
-    runSave(msg.transcript, msg.sessionId);
+    runSave(provider, msg.transcript, msg.sessionId);
     return;
   }
   send({ type: "error", error: "未知消息类型：" + msg.type });
 }
 
-async function runClaude(context, question, scenario, resumeId) {
-  // 分段拼 prompt：场景指令置于最前。scenario 为空时各分支输出与旧版逐字节一致——
+// ---------- 通用流式引擎（与后端无关） ----------
+// 启动 provider 子进程，prompt 走 stdin（防注入），逐行交给 provider.parseLine 归一化，
+// onChunk 实时转发文字。resolve 时给出全文、session id、退出码。
+// 归一化事件语义：
+//   - text + final:false → 逐字增量，立即转发并标记「已出文本」
+//   - text + final:true  → 整条完整回复，仅当本轮尚未出过文本时采用（兜底 / Codex 路径）
+function streamProvider(provider, prompt, resumeId, onChunk) {
+  return new Promise((resolve) => {
+    (async () => {
+      const bin = provider.resolveBin();
+      const stream = await provider.probeStream();
+      const validResume = resumeId && provider.isValidSessionId(resumeId) ? resumeId : null;
+      const args = provider.buildArgs({ resumeId: validResume, model: provider.resolveModel(), stream });
+
+      let child;
+      try {
+        child = spawn(bin, args, { env: { ...process.env }, shell: true });
+      } catch (err) {
+        resolve({ text: "", sessionId: validResume, code: -1, gotText: false, error: err.message, spawnError: true });
+        return;
+      }
+      currentChild = child;
+      child.stdin.write(prompt);
+      child.stdin.end();
+
+      let lineBuf = "";
+      let full = "";
+      let gotText = false;
+      let lastSessionId = validResume || null;
+      let errMsg = null;
+      let settled = false;
+
+      function consume(r) {
+        if (!r) return;
+        if (r.sessionId) lastSessionId = r.sessionId;
+        if (r.error) errMsg = r.error;
+        if (r.text != null) {
+          if (r.final) {
+            if (!gotText) { onChunk(r.text); full += r.text; gotText = true; }
+          } else {
+            onChunk(r.text); full += r.text; gotText = true;
+          }
+        }
+      }
+
+      function feed(chunk) {
+        lineBuf += chunk;
+        const lines = lineBuf.split("\n");
+        lineBuf = lines.pop(); // 末尾可能是被分块劈开的半行 JSON，留到下次拼
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try { consume(provider.parseLine(line)); } catch { /* 非 JSON 行（启动告警等）忽略 */ }
+        }
+      }
+
+      child.stdout.on("data", (data) => feed(data.toString()));
+      child.stderr.on("data", (d) => logErr(`[${provider.id} stderr]`, d.toString()));
+
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        currentChild = null;
+        // flush 末尾残行（无换行收尾时）
+        if (lineBuf.trim()) { try { consume(provider.parseLine(lineBuf)); } catch { /* 忽略 */ } }
+        resolve({ text: full, sessionId: lastSessionId, code, gotText, error: errMsg });
+      });
+
+      child.on("error", (err) => {
+        if (settled) return;
+        settled = true;
+        currentChild = null;
+        resolve({ text: full, sessionId: lastSessionId, code: -1, gotText, error: err.message, spawnError: true });
+      });
+    })();
+  });
+}
+
+// ---------- 提问 ----------
+async function runAsk(provider, context, question, scenario, resumeId) {
+  // 分段拼 prompt：场景指令置于最前。scenario 为空时与历史逐字节一致——
   // 等价性依赖「context 段末尾是 `---`（不带换行），由 join("\n\n") 补出旧版的 `---\n\n`」，改动拼接时务必保持
   const sections = [];
   if (scenario) sections.push(`【场景要求】\n${scenario}`);
@@ -137,74 +204,24 @@ async function runClaude(context, question, scenario, resumeId) {
   const prompt = sections.join("\n\n");
 
   const startedAt = Date.now();
-  logFile(`[ask] resume=${resumeId || "无"} ctx=${(context || "").length}字 scenario=${(scenario || "").length}字 q=${question || "（空）"}`);
+  logFile(`[ask] provider=${provider.id} resume=${resumeId || "无"} ctx=${(context || "").length}字 scenario=${(scenario || "").length}字 q=${question || "（空）"}`);
   logFile(`[prompt] ----------\n${prompt}\n----------`);
 
-  // stream-json：claude 输出 NDJSON 事件流；逐字增量标志仅在 CLI 支持时附加
-  const args = ["-p", "--output-format", "stream-json", "--verbose"];
-  // 续接同一会话；ID 来自插件消息，严格校验格式再上命令行（shell:true）
-  if (resumeId && /^[0-9a-zA-Z-]{8,64}$/.test(resumeId)) args.push("--resume", resumeId);
-  if (await supportsPartial()) args.push("--include-partial-messages");
-  // 可选：包装器里设 CLAUDE_MODEL=haiku 用更快的模型
-  if (process.env.CLAUDE_MODEL) args.push("--model", process.env.CLAUDE_MODEL);
+  const res = await streamProvider(provider, prompt, resumeId, (text) => send({ type: "chunk", text }));
 
-  // prompt 走 stdin，不拼进命令行：避免 shell 转义问题和命令注入
-  const child = spawn(CLAUDE, args, { env: { ...process.env }, shell: true });
-  currentChild = child;
-  child.stdin.write(prompt);
-  child.stdin.end();
-
-  let lineBuf = "";
-  let sentChars = 0;
-  let lastSessionId = resumeId || null;
-
-  function handleEvent(ev) {
-    // init / result 事件都带 session_id，记下来供下一轮 --resume 续聊
-    if (ev.session_id) lastSessionId = ev.session_id;
-    // 增量文字：{"type":"stream_event","event":{"delta":{"type":"text_delta","text":"..."}}}
-    const delta = ev?.event?.delta;
-    if (ev.type === "stream_event" && delta?.type === "text_delta" && delta.text) {
-      sentChars += delta.text.length;
-      send({ type: "chunk", text: delta.text });
-      return;
-    }
-    // 兜底：CLI 不支持增量事件时，用最终 result 一次性返回
-    if (ev.type === "result" && sentChars === 0 && typeof ev.result === "string") {
-      sentChars += ev.result.length;
-      send({ type: "chunk", text: ev.result });
-    }
+  if (res.spawnError) {
+    logFile(`[error] 无法启动 ${provider.id}：${res.error}`);
+    send({ type: "error", error: `无法启动 ${provider.label}：${res.error}` });
+    return;
   }
-
-  child.stdout.on("data", (data) => {
-    lineBuf += data.toString();
-    const lines = lineBuf.split("\n");
-    lineBuf = lines.pop(); // 末尾可能是被分块劈开的半行 JSON，留到下次拼
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        handleEvent(JSON.parse(line));
-      } catch {
-        // 非 JSON 行（启动警告等）忽略
-      }
-    }
-  });
-
-  child.stderr.on("data", (d) => logErr("[claude stderr]", d.toString()));
-
-  child.on("close", (code) => {
-    currentChild = null;
-    if (sentChars === 0 && code !== 0) {
-      send({ type: "chunk", text: `[错误] claude 退出码 ${code}` });
-    }
-    logFile(`[done] code=${code} session=${lastSessionId || "无"} 耗时=${((Date.now() - startedAt) / 1000).toFixed(1)}s 输出=${sentChars}字`);
-    send({ type: "done", code, sessionId: lastSessionId });
-  });
-
-  child.on("error", (err) => {
-    currentChild = null;
-    logFile(`[error] 无法启动 claude：${err.message}`);
-    send({ type: "error", error: `无法启动 claude：${err.message}` });
-  });
+  // 无任何输出时给出可读的失败原因（后端报错 / 非零退出）
+  if (!res.gotText && res.error) {
+    send({ type: "chunk", text: `[错误] ${res.error}` });
+  } else if (!res.gotText && res.code !== 0) {
+    send({ type: "chunk", text: `[错误] ${provider.label} 退出码 ${res.code}` });
+  }
+  logFile(`[done] provider=${provider.id} code=${res.code} session=${res.sessionId || "无"} 耗时=${((Date.now() - startedAt) / 1000).toFixed(1)}s 输出=${res.text.length}字`);
+  send({ type: "done", code: res.code, sessionId: res.sessionId });
 }
 
 // ---------- 保存研究笔记到本地 ----------
@@ -242,87 +259,45 @@ function slugify(s) {
   return out || "研究笔记";
 }
 
-async function runSave(transcript, resumeId) {
+async function runSave(provider, transcript, resumeId) {
   const startedAt = Date.now();
-  logFile(`[save] resume=${resumeId || "无"} transcript=${(transcript || "").length}字`);
+  logFile(`[save] provider=${provider.id} resume=${resumeId || "无"} transcript=${(transcript || "").length}字`);
 
   const instruction = "把我们刚才整场讨论总结成一篇结构化研究笔记。要求：第一行用 `# ` 输出一个概括本次讨论【主题】的简短标题（不超过 20 字，必须反映实际讨论内容，禁止使用「你好」「奥北，你好」之类的问候语或开场白）；其后依次写背景、关键要点、结论。只输出笔记正文的 Markdown，不要复述原始对话原文。";
-  // 能 resume 就靠会话上下文（省 token）；否则把 transcript 内联进 prompt（旧版 CLI 降级）
-  const canResume = resumeId && /^[0-9a-zA-Z-]{8,64}$/.test(resumeId);
+  // 能 resume 就靠会话上下文（省 token）；否则把 transcript 内联进 prompt（不支持续聊时降级）
+  const canResume = resumeId && provider.isValidSessionId(resumeId);
   const prompt = canResume
     ? instruction
     : `${instruction}\n\n以下是原始对话：\n\n---\n${transcript}\n---`;
 
-  // 纯文本总结：不加 --allowedTools，无需任何工具权限
-  const args = ["-p", "--output-format", "stream-json", "--verbose"];
-  if (canResume) args.push("--resume", resumeId);
-  if (await supportsPartial()) args.push("--include-partial-messages");
-  if (process.env.CLAUDE_MODEL) args.push("--model", process.env.CLAUDE_MODEL);
+  const res = await streamProvider(provider, prompt, canResume ? resumeId : null, (text) => send({ type: "chunk", text }));
 
-  const child = spawn(CLAUDE, args, { env: { ...process.env }, shell: true });
-  currentChild = child;
-  child.stdin.write(prompt);
-  child.stdin.end();
-
-  let lineBuf = "";
-  let summary = "";
-  let lastSessionId = canResume ? resumeId : null;
-
-  function handleEvent(ev) {
-    if (ev.session_id) lastSessionId = ev.session_id;
-    const delta = ev?.event?.delta;
-    if (ev.type === "stream_event" && delta?.type === "text_delta" && delta.text) {
-      summary += delta.text;
-      send({ type: "chunk", text: delta.text });
-      return;
-    }
-    // 旧版 CLI 无增量事件时，用最终 result 一次性返回
-    if (ev.type === "result" && summary.length === 0 && typeof ev.result === "string") {
-      summary += ev.result;
-      send({ type: "chunk", text: ev.result });
-    }
+  if (res.spawnError) {
+    logFile(`[error] 无法启动 ${provider.id}：${res.error}`);
+    send({ type: "error", error: `无法启动 ${provider.label}：${res.error}` });
+    return;
   }
 
-  child.stdout.on("data", (data) => {
-    lineBuf += data.toString();
-    const lines = lineBuf.split("\n");
-    lineBuf = lines.pop();
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try { handleEvent(JSON.parse(line)); } catch { /* 非 JSON 行忽略 */ }
-    }
-  });
+  // 总结失败也落盘：保证点击不白费，原始对话照常写入
+  const summary = res.text;
+  const ok = summary.trim().length > 0;
+  const { title, body } = ok ? splitSummary(summary) : { title: "研究笔记", body: "" };
+  const summarySection = ok ? (body || title) : "（总结生成失败，仅保留原始对话）";
 
-  child.stderr.on("data", (d) => logErr("[claude stderr]", d.toString()));
+  const { date, time, human } = stamp(new Date());
+  const fileName = `${date}-${time}-${slugify(title)}.md`;
+  const content =
+    `# ${title}\n\n_${human}_\n\n## 总结\n\n${summarySection}\n\n---\n\n## 原始对话\n\n${transcript || "（无）"}\n`;
 
-  child.on("close", () => {
-    currentChild = null;
-    // 总结失败也落盘：保证点击不白费，原始对话照常写入
-    const ok = summary.trim().length > 0;
-    const { title, body } = ok ? splitSummary(summary) : { title: "研究笔记", body: "" };
-    const summarySection = ok ? (body || title) : "（总结生成失败，仅保留原始对话）";
-
-    const { date, time, human } = stamp(new Date());
-    const fileName = `${date}-${time}-${slugify(title)}.md`;
-    const content =
-      `# ${title}\n\n_${human}_\n\n## 总结\n\n${summarySection}\n\n---\n\n## 原始对话\n\n${transcript || "（无）"}\n`;
-
-    try {
-      fs.mkdirSync(NOTES_DIR, { recursive: true });
-      fs.writeFileSync(path.join(NOTES_DIR, fileName), content, "utf8");
-      const rel = path.join("notes", fileName);
-      logFile(`[saved] file=${rel} 总结=${ok ? "成功" : "失败"} 耗时=${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
-      send({ type: "saved", path: rel });
-      send({ type: "done", sessionId: lastSessionId });
-    } catch (e) {
-      logFile(`[error] 写盘失败：${e.message}`);
-      send({ type: "error", error: "写盘失败：" + e.message });
-    }
-  });
-
-  child.on("error", (err) => {
-    currentChild = null;
-    logFile(`[error] 无法启动 claude：${err.message}`);
-    send({ type: "error", error: `无法启动 claude：${err.message}` });
-  });
+  try {
+    fs.mkdirSync(NOTES_DIR, { recursive: true });
+    fs.writeFileSync(path.join(NOTES_DIR, fileName), content, "utf8");
+    const rel = path.join("notes", fileName);
+    logFile(`[saved] provider=${provider.id} file=${rel} 总结=${ok ? "成功" : "失败"} 耗时=${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    send({ type: "saved", path: rel });
+    send({ type: "done", sessionId: res.sessionId });
+  } catch (e) {
+    logFile(`[error] 写盘失败：${e.message}`);
+    send({ type: "error", error: "写盘失败：" + e.message });
+  }
 }

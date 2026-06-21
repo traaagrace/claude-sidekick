@@ -24,46 +24,57 @@ const isWin = process.platform === "win32";
 const isMac = process.platform === "darwin";
 const nodePath = process.execPath;
 
-// 找 claude CLI 的绝对路径（Chrome 启动的进程拿不到 shell 的 PATH，必须写死）
-function findClaude() {
+// 找某个 CLI 的绝对路径（Chrome 启动的进程拿不到 shell 的 PATH，必须写死）
+// extraNix / extraWin：该 CLI 特有的常见安装位置
+function findBin(binName, extraNix = [], extraWin = []) {
   try {
-    const cmd = isWin ? "where claude" : "which claude";
+    const cmd = isWin ? `where ${binName}` : `which ${binName}`;
     const found = execSync(cmd, { encoding: "utf8" }).split(/\r?\n/).filter(Boolean)[0];
     if (found && fs.existsSync(found)) return found;
   } catch {
     // 不在 PATH 里，继续查常见安装位置
   }
   const candidates = isWin
-    ? [path.join(os.homedir(), "AppData", "Roaming", "npm", "claude.cmd")]
+    ? [path.join(os.homedir(), "AppData", "Roaming", "npm", `${binName}.cmd`), ...extraWin]
     : [
-        "/opt/homebrew/bin/claude",
-        "/usr/local/bin/claude",
-        path.join(os.homedir(), ".local", "bin", "claude"),
-        path.join(os.homedir(), ".claude", "local", "claude"),
+        `/opt/homebrew/bin/${binName}`,
+        `/usr/local/bin/${binName}`,
+        path.join(os.homedir(), ".local", "bin", binName),
+        ...extraNix,
       ];
   return candidates.find((p) => fs.existsSync(p)) || null;
 }
 
-const claudePath = findClaude();
-if (!claudePath) {
-  console.warn("⚠️  未找到 claude CLI，host 将依赖系统 PATH（Mac 上大概率失败，建议先装好再重跑）");
+// 两个后端都探测；找到谁写谁，缺一个只告警不阻断（用户可能只用其中一个）
+const claudePath = findBin("claude", [path.join(os.homedir(), ".claude", "local", "claude")]);
+const codexPath = findBin("codex", [path.join(os.homedir(), ".codex", "bin", "codex")]);
+if (!claudePath && !codexPath) {
+  console.warn("⚠️  未找到 claude 或 codex CLI，host 将依赖系统 PATH（Mac 上大概率失败，建议先装好再重跑）");
+} else {
+  if (!claudePath) console.warn("ℹ️  未找到 claude CLI（如需用 Claude 后端，请先安装后重跑）");
+  if (!codexPath) console.warn("ℹ️  未找到 codex CLI（如需用 Codex 后端，请先安装后重跑）");
 }
 
-// 1. 生成启动包装器（node/claude 绝对路径写死，避免 PATH 问题）
+// 1. 生成启动包装器（node/claude/codex 绝对路径写死，避免 PATH 问题）
 let wrapperPath;
 if (isWin) {
   wrapperPath = path.join(here, "host.bat");
   const lines = ["@echo off"];
   if (claudePath) lines.push(`set "CLAUDE_CLI=${claudePath}"`);
+  if (codexPath) lines.push(`set "CODEX_CLI=${codexPath}"`);
   lines.push(`"${nodePath}" "${path.join(here, "host.js")}" %*`);
   fs.writeFileSync(wrapperPath, lines.join("\r\n") + "\r\n");
 } else {
   wrapperPath = path.join(here, "host.sh");
   const lines = ["#!/bin/sh"];
-  if (claudePath) {
-    lines.push(`export CLAUDE_CLI="${claudePath}"`);
-    lines.push(`export PATH="${path.dirname(claudePath)}:${path.dirname(nodePath)}:$PATH"`);
-  }
+  if (claudePath) lines.push(`export CLAUDE_CLI="${claudePath}"`);
+  if (codexPath) lines.push(`export CODEX_CLI="${codexPath}"`);
+  // 把找到的 CLI 目录 + node 目录都加进 PATH，覆盖 Chrome 启动进程缺 PATH 的情况
+  const pathDirs = [];
+  if (claudePath) pathDirs.push(path.dirname(claudePath));
+  if (codexPath) pathDirs.push(path.dirname(codexPath));
+  pathDirs.push(path.dirname(nodePath));
+  lines.push(`export PATH="${pathDirs.join(":")}:$PATH"`);
   lines.push(`exec "${nodePath}" "${path.join(here, "host.js")}" "$@"`);
   fs.writeFileSync(wrapperPath, lines.join("\n") + "\n", { mode: 0o755 });
 }
@@ -107,6 +118,7 @@ console.log(`
 ✅ 安装完成
    node:    ${nodePath}
    claude:  ${claudePath || "（未找到，依赖 PATH）"}
+   codex:   ${codexPath || "（未找到，依赖 PATH）"}
    wrapper: ${wrapperPath}
 
 下一步：

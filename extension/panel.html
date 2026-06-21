@@ -25,6 +25,16 @@
   }
   header .logo { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
 
+  /* 后端选择器：紧挨标题，运行时即时切换 Claude / Codex */
+  #provider-select {
+    font-size: 11px; color: #444; background: #fafaf9;
+    border: 1px solid #e0e0de; border-radius: 6px; padding: 2px 6px;
+    cursor: pointer; outline: none; font-family: inherit;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  #provider-select:hover { border-color: #ccc; }
+  #provider-select:focus { border-color: #aaa; background: #fff; }
+
   /* 工具栏：图标 + 文字按钮，含义一目了然 */
   #toolbar {
     background: #fff; border-bottom: 1px solid #e5e5e3;
@@ -208,7 +218,11 @@
 <body>
 
 <header>
-  <span class="logo">✦ Claude Sidekick</span>
+  <span class="logo">✦ Sidekick</span>
+  <select id="provider-select" title="选择回答用的后端（运行时即时切换）">
+    <option value="claude">Claude</option>
+    <option value="codex">Codex</option>
+  </select>
   <span class="status">
     <span class="dot" id="dot"></span>
     <span id="status-text">检查连接...</span>

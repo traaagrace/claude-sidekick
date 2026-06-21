@@ -1,6 +1,13 @@
-# Claude Sidekick 功能清单与变更记录
+# Sidekick 功能清单与变更记录
 
-## 当前功能清单（v1.6.0）
+## 当前功能清单（v1.7.0）
+
+### 多后端
+- [x] **可切换后端**：面板 header 下拉选择 Claude / Codex，选择持久化（`chrome.storage.local`），运行时即时生效
+- [x] **模块化 provider 抽象**：`providers/<id>.js` 各自声明命令行参数、输出解析、流式能力、session 校验；新增后端 = 一个文件 + 注册一行，host.js 与后端解耦
+- [x] **按 provider 的会话归属**：跨后端 resume 不可能，切换后端自动作废旧会话并重新注入上下文/场景；同后端内多轮续聊不变
+- [x] Codex 复用本机 ChatGPT 登录（`codex exec --json --skip-git-repo-check --sandbox read-only`），免 API Key
+- [x] Codex 回复整段返回（`exec --json` 无逐字增量，复用「整段返回」兜底路径）；Claude 仍逐字流式
 
 ### 内容获取
 - [x] 选中页面文字后出现 `✦ Claude` 浮动按钮，点击发送到侧边栏
@@ -39,6 +46,23 @@
 ---
 
 ## 变更记录
+
+### v1.7.0 - 2026-06-22
+
+**新增**
+- **多后端支持（Codex）**：面板可在 Claude / Codex 间切换，模块化 provider 抽象（方案见 `docs/superpowers/specs/2026-06-22-codex-provider-support-design.md`）
+- 新增 `providers/` 目录：`index.js`（注册表，缺省回退 claude）、`claude.js`（封装现有行为，逐字节等价）、`codex.js`（`codex exec --json` 适配器）
+- host.js 重构为 provider-无关的通用引擎：抽出 `streamProvider()` 统一流式循环，`runAsk`/`runSave` 仅负责拼 prompt 与后处理；归一化事件 `{sessionId?, text?, final?, error?}`，`final` 整段回复仅在未出过文本时采用（兜底/Codex 路径）
+- panel header 加后端下拉选择器；消息透传 `provider` 字段；按 provider 维护 `sessionProvider`，切换后端作废旧会话
+- install.js：`findBin()` 泛化，同时探测并写入 `CLAUDE_CLI` 与 `CODEX_CLI`，PATH 追加两者目录；缺一个只告警不阻断
+- 新增 `tests/providers.test.js`（node 内置 `node:test`，零依赖，17 用例覆盖 args/parse/registry）
+
+**兼容**
+- 默认后端 claude；消息无 `provider` 字段时 host 回退 claude，旧版面板/现有安装零迁移
+- host 注册 ID `com.claude.sidekick` 不变；UI 标题改中性「✦ Sidekick」
+
+**待核对**（已隔离在 `providers/codex.js`）
+- `codex exec -` 从 stdin 读 prompt、`exec resume <id>` 与 `--json` 拼接顺序，需对实际 codex 版本验证
 
 ### v1.6.0 - 2026-06-13
 

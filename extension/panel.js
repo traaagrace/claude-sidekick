@@ -1,7 +1,9 @@
 let selections = []; // 选段数组 [{id, text, addedAt}]，单一数据源在 chrome.storage.session
 let replaceTargetId = null; // 待替换条目 id；非空时下一次页面选中替换该条
 let isStreaming = false;
-let sessionId = null; // claude 会话 ID：同一对话框内续聊，点「新对话」清空
+let sessionId = null; // 会话 ID：同一对话框内续聊，点「新对话」清空
+let sessionProvider = null; // sessionId 归属的后端：跨后端 resume 不可能，切换后端时作废旧会话
+let currentProvider = "claude"; // 当前所选后端（claude / codex），持久化在 chrome.storage.local
 let injectedContext = null; // 本会话已注入的选段上下文快照（拼接字符串）：同一上下文一轮会话只注入一次，变化才重新注入
 
 const dot = document.getElementById("dot");
@@ -14,6 +16,7 @@ const hint = document.getElementById("hint");
 const copyAllBtn = document.getElementById("copy-all");
 const newChatBtn = document.getElementById("new-chat");
 const saveLocalBtn = document.getElementById("save-local");
+const providerSelect = document.getElementById("provider-select");
 
 // 通过 background 对 native host 做健康检查（每次会临时拉起 host，频率不宜太高）
 function checkBridge() {
@@ -30,6 +33,37 @@ function checkBridge() {
 
 checkBridge();
 setInterval(checkBridge, 30000);
+
+// ---------- 后端选择（Claude / Codex） ----------
+const PROVIDER_LABELS = { claude: "Claude", codex: "Codex" };
+
+// 恢复上次选择；非法值回退 claude
+chrome.storage.local.get("provider", (res) => {
+  if (res.provider && PROVIDER_LABELS[res.provider]) {
+    currentProvider = res.provider;
+    providerSelect.value = currentProvider;
+  }
+});
+
+providerSelect.addEventListener("change", () => {
+  currentProvider = providerSelect.value;
+  chrome.storage.local.set({ provider: currentProvider });
+  // 已有会话且归属别的后端：提示下一条将开新会话（真正的作废在发送时统一处理）
+  if (sessionId && sessionProvider && sessionProvider !== currentProvider) {
+    statusText.textContent = `已切换到 ${PROVIDER_LABELS[currentProvider]}，下一条将开启新会话`;
+    setTimeout(checkBridge, 2500);
+  }
+});
+
+// 切换后端后旧会话作废：跨后端 resume 不可能，清空会话与已注入快照，让上下文/场景重新注入到新后端
+function ensureSessionMatchesProvider() {
+  if (sessionId && sessionProvider && sessionProvider !== currentProvider) {
+    sessionId = null;
+    sessionProvider = null;
+    injectedContext = null;
+    injectedScenario = null;
+  }
+}
 
 // ---------- 复制 ----------
 function copyText(text, btn) {
@@ -68,6 +102,7 @@ newChatBtn.addEventListener("click", () => {
   const transcript = getTranscript();
   if (transcript) copyText(transcript, newChatBtn);
   sessionId = null;
+  sessionProvider = null; // 会话清空，归属一并清空
   injectedScenario = null; // 新会话需重新注入场景；激活状态保留，继续用同场景不必重选
   injectedContext = null; // 新会话需重新注入选段上下文；选段保留
   messagesEl.querySelectorAll(".msg").forEach((m) => m.remove());
@@ -80,6 +115,7 @@ newChatBtn.addEventListener("click", () => {
 // 自包含的流式处理：刻意不复用 doSend 的内部逻辑，避免改动已稳定的提问路径
 saveLocalBtn.addEventListener("click", () => {
   if (isStreaming) return;
+  ensureSessionMatchesProvider();
   const transcript = getTranscript();
   if (!transcript) {
     statusText.textContent = "还没有可保存的对话";
@@ -125,6 +161,7 @@ saveLocalBtn.addEventListener("click", () => {
       scheduleRender();
     } else if (msg.type === "done") {
       if (msg.sessionId) sessionId = msg.sessionId; // 保存复用并推进会话，保持线性
+      sessionProvider = currentProvider; // 记住会话归属，供切换后端时作废
       finish();
     } else if (msg.type === "error") {
       rawReply += `\n\n[保存失败] ${msg.error}`;
@@ -139,7 +176,7 @@ saveLocalBtn.addEventListener("click", () => {
     }
   });
 
-  port.postMessage({ type: "save", transcript, sessionId });
+  port.postMessage({ type: "save", transcript, sessionId, provider: currentProvider });
 });
 
 // ---------- 选段上下文（多段共存） ----------
@@ -413,6 +450,7 @@ function addMsg(role, text) {
 
 function doSend() {
   if (isStreaming) return;
+  ensureSessionMatchesProvider(); // 切了后端先作废旧会话，再判断是否需重新注入上下文/场景
   const question = questionEl.value.trim();
   const context = buildContext();
 
@@ -472,6 +510,7 @@ function doSend() {
       scheduleRender();
     } else if (msg.type === "done") {
       if (msg.sessionId) sessionId = msg.sessionId; // 记住会话，下一轮续聊
+      sessionProvider = currentProvider; // 记住会话归属，供切换后端时作废
       // 成功完成才确认注入快照；发送失败不标记，重试时会重新注入
       if (needInject) injectedScenario = { id: activeScenario.id, prompt: activeScenario.prompt };
       if (needCtxInject) injectedContext = context;
@@ -492,5 +531,5 @@ function doSend() {
     }
   });
 
-  port.postMessage({ context: needCtxInject ? context : "", question, scenario, sessionId });
+  port.postMessage({ context: needCtxInject ? context : "", question, scenario, sessionId, provider: currentProvider });
 }

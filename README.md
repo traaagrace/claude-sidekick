@@ -1,12 +1,13 @@
-# ✦ Claude Sidekick
+# ✦ Sidekick
 
-**划词即问，网页伴读。** 选中页面上的任何文字，一键发给 Claude 分析——翻译、解读、总结、追问，答案逐字流式呈现在浏览器侧边栏。
+**划词即问，网页伴读。** 选中页面上的任何文字，一键发给 Claude 或 Codex 分析——翻译、解读、总结、追问，答案流式呈现在浏览器侧边栏。
 
 ## 为什么选它
 
-- 🔑 **零成本接入** — 复用本机 Claude Code CLI 登录态，不需要 API Key，不产生额外账单
+- 🔑 **零成本接入** — 复用本机 Claude Code / Codex CLI 登录态，不需要 API Key，不产生额外账单
+- 🔀 **多后端可切换** — 面板内一键切换 Claude / Codex，选择持久化；模块化 provider 抽象，新增后端只需加一个文件
 - 🪶 **零依赖、零常驻** — 没有 npm 包、没有后台服务、不监听端口；基于 Chrome Native Messaging，提问时自动拉起进程，答完即销毁
-- ⚡ **流式回答** — 逐字打字机效果，告别干等
+- ⚡ **流式回答** — Claude 逐字打字机效果；Codex 整段返回（`exec --json` 无逐字增量）
 - 💬 **多轮会话** — 同一对话框内自动续接上下文，可连续追问
 - 📝 **Markdown 渲染** — 标题、代码块、列表、引用原生呈现；渲染前全文 HTML 转义，天然防 XSS
 - 🖥️ **跨平台** — Windows / macOS / Linux，一条命令安装，一条命令卸载
@@ -16,13 +17,18 @@
 ## 目录结构
 
 ```
-claude-sidekick/
-├── host.js            # Native Messaging host（Chrome 按需自动启动）
-├── install.js         # 一次性安装脚本（注册 host 到 Chrome）
+sidekick/
+├── host.js            # Native Messaging host：provider-无关的通用引擎（Chrome 按需自动启动）
+├── providers/         # 后端适配器（模块化，新增后端 = 加一个文件 + 注册一行）
+│   ├── index.js       # 注册表，缺省回退 claude
+│   ├── claude.js      # Claude Code CLI 适配器（与历史行为逐字节等价）
+│   └── codex.js       # Codex CLI 适配器（codex exec --json）
+├── install.js         # 一次性安装脚本（探测 claude/codex 路径，注册 host 到 Chrome）
 ├── uninstall.js       # 卸载脚本（删除注册表/清单及生成文件）
 ├── uninstall.cmd      # Windows 双击卸载
 ├── bridge.js          # [已退役] 旧版 HTTP 桥接服务，仅作备用
 ├── CHANGELOG.md       # 功能清单与变更记录
+├── tests/             # provider 单测（node 内置 node:test，零依赖）
 └── extension/         # Chrome 插件目录
     ├── manifest.json
     ├── background.js
@@ -62,6 +68,8 @@ node install.js <插件ID>
 - **浮动按钮**：在任意页面选中文字，出现 `✦ Claude` 按钮，点击后侧边栏打开
 - **右键菜单**：选中文字后右键 → 「用 Claude 分析选中内容」
 - **直接提问**：点击插件图标打开侧边栏，直接输入问题
+- **切换后端**：header 下拉选 Claude / Codex，运行时即时生效，选择持久化。
+  跨后端无法续聊，切换后下一条会开启新会话（上下文/场景自动重新注入）
 - **多轮会话**：同一聊天框内连续提问自动续接同一会话，可以追问；
   点 header 的 **＋** 开启新对话（开启前会自动复制当前对话到剪贴板）
 - **复制**：header 的 **⧉** 复制全部对话；悬停单条消息出现 ⧉ 复制该条
@@ -73,17 +81,22 @@ node install.js <插件ID>
 
 ## 前提条件
 
-- 已安装 Claude Code CLI（`claude` 命令可用）
+- 至少装好一个后端 CLI 并登录：
+  - **Claude**：Claude Code CLI（`claude` 命令可用）
+  - **Codex**：OpenAI Codex CLI（`codex` 命令可用，已登录 ChatGPT 或配置 `OPENAI_API_KEY`）
+  - 只装其一也能用，install.js 会探测谁在就写谁；面板里只切到装好的后端即可
 - Node.js（运行 install.js / host.js）
-- 无任何 npm 依赖，只用 Node.js 内置模块
+- 无任何 npm 依赖，只用 Node.js 内置模块（含测试，跑 `node --test`）
 
 ## 可选配置
 
-想用更快的模型，编辑生成的包装器（`host.bat` / `host.sh`），加一行环境变量：
+想用更快/指定的模型，编辑生成的包装器（`host.bat` / `host.sh`），加一行环境变量（各后端独立）：
 
 ```
-set "CLAUDE_MODEL=haiku"     (Windows, host.bat)
-export CLAUDE_MODEL=haiku    (Mac/Linux, host.sh)
+set "CLAUDE_MODEL=haiku"          (Windows, host.bat)
+export CLAUDE_MODEL=haiku         (Mac/Linux, host.sh)
+set "CODEX_MODEL=gpt-5-codex"     (Windows, host.bat)
+export CODEX_MODEL=gpt-5-codex    (Mac/Linux, host.sh)
 ```
 
 ## 日志
