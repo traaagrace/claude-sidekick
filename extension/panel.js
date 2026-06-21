@@ -16,7 +16,7 @@ const hint = document.getElementById("hint");
 const copyAllBtn = document.getElementById("copy-all");
 const newChatBtn = document.getElementById("new-chat");
 const saveLocalBtn = document.getElementById("save-local");
-const providerSelect = document.getElementById("provider-select");
+const providerToggle = document.getElementById("provider-toggle");
 
 // 通过 background 对 native host 做健康检查（每次会临时拉起 host，频率不宜太高）
 function checkBridge() {
@@ -34,28 +34,44 @@ function checkBridge() {
 checkBridge();
 setInterval(checkBridge, 30000);
 
-// ---------- 后端选择（Claude / Codex） ----------
+// ---------- 后端选择（分段开关，从 PROVIDER_LABELS 渲染，可扩展） ----------
 const PROVIDER_LABELS = { claude: "Claude", codex: "Codex" };
 
-// 恢复上次选择；非法值回退 claude
-chrome.storage.local.get("provider", (res) => {
-  if (res.provider && PROVIDER_LABELS[res.provider]) {
-    currentProvider = res.provider;
-    providerSelect.value = currentProvider;
-  }
-});
+function renderProviderToggle() {
+  providerToggle.replaceChildren(...Object.entries(PROVIDER_LABELS).map(([id, label]) => {
+    const btn = document.createElement("button");
+    btn.className = "provider-opt" + (id === currentProvider ? " active" : "");
+    btn.textContent = label;
+    btn.dataset.provider = id;
+    btn.setAttribute("aria-pressed", id === currentProvider ? "true" : "false");
+    btn.addEventListener("click", () => selectProvider(id));
+    return btn;
+  }));
+}
 
-providerSelect.addEventListener("change", () => {
-  currentProvider = providerSelect.value;
+function selectProvider(id) {
+  if (id === currentProvider) return;
+  // 生成中不许切换：避免 in-flight 回帧把会话错误归属到新后端（竞态）
+  if (isStreaming) {
+    statusText.textContent = "回答生成中，请稍候再切换后端";
+    setTimeout(checkBridge, 2000);
+    return;
+  }
+  currentProvider = id;
   chrome.storage.local.set({ provider: currentProvider });
-  // 已有会话且归属别的后端：提示下一条将开新会话（真正的作废在发送时统一处理）
-  if (sessionId && sessionProvider && sessionProvider !== currentProvider) {
-    statusText.textContent = `已切换到 ${PROVIDER_LABELS[currentProvider]}，下一条将开启新会话`;
-    setTimeout(checkBridge, 2500);
-  }
+  renderProviderToggle();
+  // 切换后端 = 直接开启新会话（跨后端无法续聊；原对话已复制到剪贴板防丢失）
+  startNewConversation(null, `已切换到 ${PROVIDER_LABELS[currentProvider]}，已开启新会话`);
+}
+
+// 先用默认渲染，避免存储回调前空白；恢复上次选择后重渲
+renderProviderToggle();
+chrome.storage.local.get("provider", (res) => {
+  if (res.provider && PROVIDER_LABELS[res.provider]) currentProvider = res.provider;
+  renderProviderToggle();
 });
 
-// 切换后端后旧会话作废：跨后端 resume 不可能，清空会话与已注入快照，让上下文/场景重新注入到新后端
+// 防御性兜底：万一仍出现会话归属与当前后端不一致（如未来新增路径），发送前作废旧会话
 function ensureSessionMatchesProvider() {
   if (sessionId && sessionProvider && sessionProvider !== currentProvider) {
     sessionId = null;
@@ -97,18 +113,24 @@ copyAllBtn.addEventListener("click", () => {
   if (transcript) copyText(transcript, copyAllBtn);
 });
 
-newChatBtn.addEventListener("click", () => {
-  if (isStreaming) return; // 回答生成中不允许重开
+// 开启新会话：复制当前对话到剪贴板（防丢失）→ 清空会话状态与消息区 → 重置注入标记。
+// 「新对话」按钮与切换后端两处共用（选段/场景库保留，只重置对话）。
+function startNewConversation(copyBtn, statusMsg) {
   const transcript = getTranscript();
-  if (transcript) copyText(transcript, newChatBtn);
+  if (transcript) copyText(transcript, copyBtn);
   sessionId = null;
   sessionProvider = null; // 会话清空，归属一并清空
   injectedScenario = null; // 新会话需重新注入场景；激活状态保留，继续用同场景不必重选
   injectedContext = null; // 新会话需重新注入选段上下文；选段保留
   messagesEl.querySelectorAll(".msg").forEach((m) => m.remove());
   hint.style.display = "";
-  statusText.textContent = transcript ? "已复制对话，新会话已开启" : "新会话已开启";
+  statusText.textContent = statusMsg !== undefined ? statusMsg : (transcript ? "已复制对话，新会话已开启" : "新会话已开启");
   setTimeout(checkBridge, 2000); // 稍后恢复正常状态显示
+}
+
+newChatBtn.addEventListener("click", () => {
+  if (isStreaming) return; // 回答生成中不允许重开
+  startNewConversation(newChatBtn);
 });
 
 // ---------- 保存到本地 ----------

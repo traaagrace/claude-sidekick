@@ -25,15 +25,27 @@
   }
   header .logo { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
 
-  /* 后端选择器：紧挨标题，运行时即时切换 Claude / Codex */
-  #provider-select {
-    font-size: 11px; color: #444; background: #fafaf9;
-    border: 1px solid #e0e0de; border-radius: 6px; padding: 2px 6px;
-    cursor: pointer; outline: none; font-family: inherit;
-    transition: border-color 0.15s, background 0.15s;
+  /* 后端选择：独立一行的分段开关（iOS 风），清晰不挤、运行时即时切换 */
+  #provider-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 16px; background: #fff; border-bottom: 1px solid #ececea;
   }
-  #provider-select:hover { border-color: #ccc; }
-  #provider-select:focus { border-color: #aaa; background: #fff; }
+  .provider-label { font-size: 11px; color: #9a9a96; font-weight: 500; letter-spacing: 0.3px; }
+  #provider-toggle {
+    display: inline-flex; padding: 2px; gap: 2px;
+    background: #f0efec; border: 1px solid #e6e5e2; border-radius: 9px;
+  }
+  .provider-opt {
+    border: none; background: transparent; cursor: pointer;
+    font-size: 12px; color: #6a6a66; font-family: inherit; font-weight: 500;
+    padding: 4px 16px; border-radius: 7px; line-height: 1.5;
+    transition: background 0.18s, color 0.18s, box-shadow 0.18s;
+  }
+  .provider-opt:hover:not(.active) { color: #1a1a1a; }
+  .provider-opt.active {
+    background: #fff; color: #1a1a1a;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 0 0 0.5px rgba(0,0,0,0.04);
+  }
 
   /* 工具栏：图标 + 文字按钮，含义一目了然 */
   #toolbar {
@@ -84,21 +96,34 @@
   }
   .ctx-item button:hover { color: #7a6a3a; }
 
-  #messages { flex: 1; overflow-y: auto; padding: 16px 14px; display: flex; flex-direction: column; gap: 14px; }
-  .msg { max-width: 100%; line-height: 1.6; position: relative; }
+  #messages {
+    flex: 1; overflow-y: auto; padding: 18px 14px 20px;
+    display: flex; flex-direction: column; gap: 16px; scroll-behavior: smooth;
+  }
+  .msg {
+    max-width: 100%; line-height: 1.65; position: relative;
+    animation: msgIn 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  @keyframes msgIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
   .msg.user {
-    align-self: flex-end; background: #1a1a1a; color: #fff;
-    padding: 8px 12px; border-radius: 12px 12px 3px 12px; max-width: 85%; font-size: 13px;
+    align-self: flex-end; max-width: 86%; font-size: 13px; color: #fff;
+    background: linear-gradient(160deg, #2c2c2c 0%, #1a1a1a 100%);
+    padding: 9px 13px; border-radius: 16px 16px 5px 16px;
+    box-shadow: 0 2px 8px rgba(26,26,26,0.18);
   }
   .msg.assistant {
-    align-self: flex-start; background: #fff; border: 1px solid #e8e8e6;
-    padding: 10px 13px; border-radius: 3px 12px 12px 12px;
-    font-size: 13.5px; word-break: break-word;
+    align-self: flex-start; max-width: 92%; font-size: 13.5px; color: #20201e;
+    background: #fff; border: 1px solid #ececea;
+    padding: 11px 14px; border-radius: 5px 16px 16px 16px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.045); word-break: break-word;
   }
   /* user 消息保持纯文本，保留手动换行；assistant 由 Markdown 渲染控制排版 */
   .msg.user .msg-text { white-space: pre-wrap; }
   .msg-text.streaming::after {
-    content: "▋"; animation: blink 0.8s step-end infinite; color: #999; font-size: 12px;
+    content: "▋"; animation: blink 0.9s step-end infinite; color: #b0b0aa; font-size: 12px; margin-left: 1px;
   }
 
   /* ---- Markdown 渲染样式（assistant 气泡内） ---- */
@@ -219,15 +244,16 @@
 
 <header>
   <span class="logo">✦ Sidekick</span>
-  <select id="provider-select" title="选择回答用的后端（运行时即时切换）">
-    <option value="claude">Claude</option>
-    <option value="codex">Codex</option>
-  </select>
   <span class="status">
     <span class="dot" id="dot"></span>
     <span id="status-text">检查连接...</span>
   </span>
 </header>
+
+<div id="provider-bar">
+  <span class="provider-label">后端</span>
+  <div id="provider-toggle" role="group" aria-label="选择回答用的后端"></div>
+</div>
 
 <div id="toolbar">
   <button id="new-chat" title="结束当前会话并开启新对话，原对话自动复制到剪贴板">🆕 新对话</button>
