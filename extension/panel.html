@@ -23,22 +23,17 @@
     align-items: center;
     gap: 8px;
   }
-  header .logo { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; }
+  header .logo { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; flex-shrink: 0; }
 
-  /* 后端选择：独立一行的分段开关（iOS 风），清晰不挤、运行时即时切换 */
-  #provider-bar {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 16px; background: #fff; border-bottom: 1px solid #ececea;
-  }
-  .provider-label { font-size: 11px; color: #9a9a96; font-weight: 500; letter-spacing: 0.3px; }
+  /* 后端分段开关：内嵌标题栏右侧，不单独占行（iOS 风分段控件） */
   #provider-toggle {
-    display: inline-flex; padding: 2px; gap: 2px;
-    background: #f0efec; border: 1px solid #e6e5e2; border-radius: 9px;
+    flex-shrink: 0; display: inline-flex; padding: 2px; gap: 2px;
+    background: #f0efec; border: 1px solid #e6e5e2; border-radius: 8px;
   }
   .provider-opt {
     border: none; background: transparent; cursor: pointer;
-    font-size: 12px; color: #6a6a66; font-family: inherit; font-weight: 500;
-    padding: 4px 16px; border-radius: 7px; line-height: 1.5;
+    font-size: 11.5px; color: #6a6a66; font-family: inherit; font-weight: 500;
+    padding: 3px 11px; border-radius: 6px; line-height: 1.5;
     transition: background 0.18s, color 0.18s, box-shadow 0.18s;
   }
   .provider-opt:hover:not(.active) { color: #1a1a1a; }
@@ -60,10 +55,12 @@
   }
   #toolbar button:hover { background: #f0f0ee; color: #1a1a1a; border-color: #ccc; }
   header .status {
-    margin-left: auto; font-size: 11px; color: #999;
+    font-size: 11px; color: #999;
     display: flex; align-items: center; gap: 4px;
+    flex: 1 1 auto; min-width: 0; /* 居中占位，文字过长则省略，绝不挤压右侧开关 */
   }
-  header .dot { width: 6px; height: 6px; border-radius: 50%; background: #ccc; }
+  header #status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .dot { width: 6px; height: 6px; border-radius: 50%; background: #ccc; flex-shrink: 0; }
   header .dot.ok { background: #4caf7d; }
   header .dot.err { background: #e05252; }
 
@@ -248,12 +245,8 @@
     <span class="dot" id="dot"></span>
     <span id="status-text">检查连接...</span>
   </span>
+  <div id="provider-toggle" role="group" aria-label="选择回答用的后端" title="选择回答用的后端"></div>
 </header>
-
-<div id="provider-bar">
-  <span class="provider-label">后端</span>
-  <div id="provider-toggle" role="group" aria-label="选择回答用的后端"></div>
-</div>
 
 <div id="toolbar">
   <button id="new-chat" title="结束当前会话并开启新对话，原对话自动复制到剪贴板">🆕 新对话</button>
