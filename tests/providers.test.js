@@ -68,10 +68,10 @@ test("codex.buildArgs: 非续聊 = exec，prompt 走 stdin", () => {
   );
 });
 
-test("codex.buildArgs: 续聊用 exec resume <id> 子命令", () => {
+test("codex.buildArgs: 续聊用 exec resume <id> 子命令（exec 选项必须在 resume 之前）", () => {
   assert.deepEqual(
     codex.buildArgs({ resumeId: "thread_abc12345", model: "gpt-5-codex" }),
-    ["exec", "resume", "thread_abc12345", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5-codex", "-"]
+    ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "--model", "gpt-5-codex", "resume", "thread_abc12345", "-"]
   );
 });
 

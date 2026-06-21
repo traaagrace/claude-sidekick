@@ -9,8 +9,9 @@
  *  - session id = `thread.started` 事件的 thread_id
  *  - 鉴权复用本机 ChatGPT 登录 / OPENAI_API_KEY，由 codex 自行处理
  *
- * 待对实际 codex 版本核对两点（改动均限本文件）：
- *  ① `codex exec -` 是否从 stdin 读取 prompt；② resume 子命令与 --json 等标志的拼接顺序。
+ * exec 选项（--json/--sandbox/--skip-git-repo-check/--model）属于 `codex exec`，
+ * resume 只认 SESSION_ID/--last/--all/PROMPT —— 故 exec 选项必须排在 `resume` 之前（见 buildArgs）。
+ * prompt 走 stdin（末尾 "-"），base exec 与 resume 的 PROMPT 均支持 stdin。
  */
 
 // install.js 在包装器里写入 codex 绝对路径
@@ -27,13 +28,16 @@ function probeStream() {
   return Promise.resolve(false);
 }
 
-// codex exec [resume <id>] --json --skip-git-repo-check --sandbox read-only [--model m] -
-// 末尾 "-" 表示 prompt 从 stdin 读（与 Claude 一致地避免 shell 注入与转义问题）
+// codex exec <EXEC选项> [resume <id>] -
+// 关键：--json / --sandbox / --skip-git-repo-check / --model 都是 `codex exec` 的选项，
+// 必须放在 `resume` 子命令【之前】；resume 只认 SESSION_ID / --last / --all / PROMPT。
+// 放反会被 clap 当成 resume 的未知参数而退出码 2。
+// 末尾 "-" 表示 prompt 从 stdin 读（resume 的 PROMPT 同样支持 stdin），与 Claude 一致地避免注入/转义。
 function buildArgs({ resumeId, model }) {
-  const base = resumeId ? ["exec", "resume", resumeId] : ["exec"];
-  const flags = ["--json", "--skip-git-repo-check", "--sandbox", "read-only"];
-  if (model) flags.push("--model", model);
-  return [...base, ...flags, "-"];
+  const execFlags = ["--json", "--skip-git-repo-check", "--sandbox", "read-only"];
+  if (model) execFlags.push("--model", model);
+  if (resumeId) return ["exec", ...execFlags, "resume", resumeId, "-"];
+  return ["exec", ...execFlags, "-"];
 }
 
 // codex 的 thread_id 多为 UUID；放宽到字母数字/下划线/连字符，校验后才上命令行（shell:true）

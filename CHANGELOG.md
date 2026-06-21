@@ -61,8 +61,9 @@
 - 默认后端 claude；消息无 `provider` 字段时 host 回退 claude，旧版面板/现有安装零迁移
 - host 注册 ID `com.claude.sidekick` 不变；UI 标题改中性「✦ Sidekick」
 
-**待核对**（已隔离在 `providers/codex.js`）
-- `codex exec -` 从 stdin 读 prompt、`exec resume <id>` 与 `--json` 拼接顺序，需对实际 codex 版本验证
+**修复（随后）**
+- Codex 第二轮续聊退出码 2：exec 选项（`--json` 等）被放在 `resume` 之后，被 clap 当成 resume 的未知参数。
+  按官方 CLI reference 修正为 `codex exec <exec选项> resume <id> -`（exec 选项排在 `resume` 之前）
 
 ### v1.6.0 - 2026-06-13
 
