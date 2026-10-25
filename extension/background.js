@@ -8,33 +8,52 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// 把新选中写入 selections 数组：与已有段完全相同 → 忽略（去重优先，待替换状态保留）；
-// 有待替换标记且目标仍存在 → 原位替换；否则 → 追加。
+// 单选模式用新选段覆盖；多选模式去重后原位替换或追加。
 // chrome.storage 无事务原语：用 Promise 链串行化读-改-写，防止连续选中互相覆盖。
 // 注意：sidePanel.open() 不能放进这条链——普通 Promise 微任务会丢失用户手势上下文，
 // 导致 open() 抛 "may only be called in response to a user gesture"。必须在事件监听器里同步调用。
 let writeQueue = Promise.resolve();
 
 function addSelection(text) {
-  writeQueue = writeQueue.then(() => new Promise((done) => {
-    chrome.storage.session.get(["selections", "replaceTargetId"], (res) => {
-      const selections = res.selections || [];
-      const replaceTargetId = res.replaceTargetId ?? null;
+  writeQueue = writeQueue.then(async () => {
+    const [res, prefs] = await Promise.all([
+      chrome.storage.session.get(["selections", "replaceTargetId"]),
+      chrome.storage.local.get("selectionMode"),
+    ]);
+    const selections = res.selections || [];
+    const replaceTargetId = res.replaceTargetId ?? null;
 
-      if (selections.some((s) => s.text === text)) {
-        done();
-        return;
-      }
+    if (prefs.selectionMode === "single") {
+      const selection = selections.find((s) => s.text === text)
+        || { id: crypto.randomUUID(), text, addedAt: Date.now() };
+      await chrome.storage.session.set({ selections: [selection], replaceTargetId: null });
+      return;
+    }
 
-      const hasTarget = replaceTargetId && selections.some((s) => s.id === replaceTargetId);
-      const next = hasTarget
-        ? selections.map((s) => (s.id === replaceTargetId ? { ...s, text, addedAt: Date.now() } : s))
-        : [...selections, { id: crypto.randomUUID(), text, addedAt: Date.now() }];
+    if (selections.some((s) => s.text === text)) return;
 
-      // 替换完成（或标记指向已删除条目而失效）后，统一清除标记
-      chrome.storage.session.set({ selections: next, replaceTargetId: null }, done);
-    });
-  }));
+    const hasTarget = replaceTargetId && selections.some((s) => s.id === replaceTargetId);
+    const next = hasTarget
+      ? selections.map((s) => (s.id === replaceTargetId ? { ...s, text, addedAt: Date.now() } : s))
+      : [...selections, { id: crypto.randomUUID(), text, addedAt: Date.now() }];
+
+    // 替换完成（或标记指向已删除条目而失效）后，统一清除标记
+    await chrome.storage.session.set({ selections: next, replaceTargetId: null });
+  });
+  return writeQueue;
+}
+
+// 与划词写入共用队列，保证快速切换模式后选中内容也遵循新模式。
+function setSelectionMode(mode) {
+  writeQueue = writeQueue.then(async () => {
+    if (mode === "single") {
+      const { selections = [] } = await chrome.storage.session.get("selections");
+      const latest = selections.reduce((last, s) => !last || s.addedAt >= last.addedAt ? s : last, null);
+      await chrome.storage.session.set({ selections: latest ? [latest] : [], replaceTargetId: null });
+    }
+    await chrome.storage.local.set({ selectionMode: mode });
+  });
+  return writeQueue;
 }
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
@@ -51,6 +70,19 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type !== "SELECTED_TEXT") return;
   chrome.sidePanel.open({ tabId: sender.tab.id }); // 同步调用，保住用户手势
   addSelection(msg.text);
+});
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type !== "SET_SELECTION_MODE") return;
+  if (msg.mode !== "single" && msg.mode !== "multi") {
+    sendResponse({ ok: false, error: "无效的上下文选择模式" });
+    return;
+  }
+  setSelectionMode(msg.mode).then(
+    () => sendResponse({ ok: true }),
+    (err) => sendResponse({ ok: false, error: err.message }),
+  );
+  return true;
 });
 
 // 健康检查：临时拉起 host 发 ping，收到 pong 即就绪（host 随即被销毁）

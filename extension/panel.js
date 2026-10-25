@@ -1,5 +1,6 @@
 let selections = []; // 选段数组 [{id, text, addedAt}]，单一数据源在 chrome.storage.session
 let replaceTargetId = null; // 待替换条目 id；非空时下一次页面选中替换该条
+let selectionMode = "multi"; // 单选覆盖 / 多选累积，持久化在 chrome.storage.local
 let isStreaming = false;
 let sessionId = null; // 会话 ID：同一对话框内续聊，点「新对话」清空
 let sessionProvider = null; // sessionId 归属的后端：跨后端 resume 不可能，切换后端时作废旧会话
@@ -201,9 +202,41 @@ saveLocalBtn.addEventListener("click", () => {
   port.postMessage({ type: "save", transcript, sessionId, provider: currentProvider });
 });
 
-// ---------- 选段上下文（多段共存） ----------
+// ---------- 选段上下文（单选 / 多选） ----------
 const contextSummaryEl = document.getElementById("context-summary");
 const contextListEl = document.getElementById("context-list");
+const selectionModeButtons = document.querySelectorAll(".selection-mode-opt");
+
+function renderSelectionMode() {
+  selectionModeButtons.forEach((btn) => {
+    const active = btn.dataset.mode === selectionMode;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-pressed", String(active));
+  });
+  renderContextBar();
+}
+
+selectionModeButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    chrome.runtime.sendMessage({ type: "SET_SELECTION_MODE", mode: btn.dataset.mode }, (res) => {
+      const error = chrome.runtime.lastError?.message || (!res?.ok && (res?.error || "请重载插件后重试"));
+      if (!error) return;
+      statusText.textContent = `切换上下文模式失败：${error}`;
+      setTimeout(checkBridge, 2000);
+    });
+  });
+});
+
+chrome.storage.local.get("selectionMode", (res) => {
+  selectionMode = res.selectionMode === "single" ? "single" : "multi";
+  renderSelectionMode();
+});
+
+chrome.storage.local.onChanged.addListener((changes) => {
+  if (!changes.selectionMode) return;
+  selectionMode = changes.selectionMode.newValue === "single" ? "single" : "multi";
+  renderSelectionMode();
+});
 
 // 启动加载；旧版单条 key（selectedText）迁移为一条选段后删除，渲染交给 onChanged
 chrome.storage.session.get(["selections", "replaceTargetId", "selectedText"], (res) => {
@@ -278,7 +311,9 @@ function buildCtxItem(sel, index) {
     });
   });
 
-  item.append(textEl, replaceBtn, delBtn);
+  item.append(textEl);
+  if (selectionMode === "multi") item.append(replaceBtn);
+  item.append(delBtn);
   return item;
 }
 
